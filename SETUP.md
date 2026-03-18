@@ -61,7 +61,7 @@
 ## Step 5: Connect WhatsApp Webhook
 
 1. Back in Meta Developer Console → WhatsApp → Configuration
-2. **Webhook URL:** `https://your-api.onrender.com/webhook/whatsapp`
+2. **Webhook URL:** `https://https://whatsapp-food-ordering-system-16j0.onrender.com/webhook/whatsapp`
 3. **Verify Token:** same value you set in `META_VERIFY_TOKEN`
 4. Click Verify and Save
 5. Subscribe to `messages` webhook field
