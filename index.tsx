@@ -1,12 +1,12 @@
 import { useState, useMemo } from 'react'
 import Head from 'next/head'
-import Header from '@/components/Header'
-import CategoryNav from '@/components/CategoryNav'
-import FoodCard from '@/components/FoodCard'
-import CartDrawer from '@/components/CartDrawer'
-import FloatingCart from '@/components/FloatingCart'
-import { useCart } from '@/hooks/useCart'
-import { MENU_ITEMS, RESTAURANT } from '@/lib/menuData'
+import Header from '../components/Header'
+import CategoryNav from '../components/CategoryNav'
+import FoodCard from '../components/FoodCard'
+import CartDrawer from '../components/CartDrawer'
+import FloatingCart from '../components/FloatingCart'
+import { useCart } from '../hooks/useCart'
+import { MENU_ITEMS, RESTAURANT } from '../lib/menuData'
 
 export default function MenuPage() {
   const [activeCategory, setActiveCategory] = useState('all')
@@ -17,7 +17,6 @@ export default function MenuPage() {
     return MENU_ITEMS.filter(item => item.category === activeCategory)
   }, [activeCategory])
 
-  // Group by category for "All" view
   const groupedItems = useMemo(() => {
     if (activeCategory !== 'all') return null
     const groups: Record<string, typeof MENU_ITEMS> = {}
@@ -39,7 +38,7 @@ export default function MenuPage() {
   return (
     <>
       <Head>
-        <title>{RESTAURANT.name} — Order on WhatsApp</title>
+        <title>{`${RESTAURANT.name} — Order Online`}</title>
         <meta name="description" content={RESTAURANT.tagline} />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
         <link rel="icon" href="/favicon.ico" />
@@ -56,10 +55,8 @@ export default function MenuPage() {
           onSelect={setActiveCategory}
         />
 
-        {/* Menu Grid */}
         <main className="px-4 pt-4 pb-32">
           {activeCategory === 'all' && groupedItems ? (
-            // Grouped view
             Object.entries(groupedItems).map(([category, items]) => (
               <section key={category} className="mb-8">
                 <h2
@@ -82,7 +79,6 @@ export default function MenuPage() {
               </section>
             ))
           ) : (
-            // Filtered view
             <div className="grid grid-cols-2 gap-3">
               {filteredItems.map(item => (
                 <FoodCard
@@ -104,24 +100,22 @@ export default function MenuPage() {
           )}
         </main>
 
-        {/* Floating cart bar */}
         <FloatingCart
           totalItems={cart.totalItems}
           totalPrice={cart.totalPrice}
           onOpen={() => cart.setIsOpen(true)}
         />
 
-        {/* Cart drawer */}
-       <CartDrawer
-        isOpen={cart.isOpen}
-        items={cart.items}
-        totalItems={cart.totalItems}
-        totalPrice={cart.totalPrice}
-        onClose={() => cart.setIsOpen(false)}
-        onAdd={cart.addItem}
-        onRemove={cart.removeItem}
-        onClear={cart.clearCart}
-      />
+        <CartDrawer
+          isOpen={cart.isOpen}
+          items={cart.items}
+          totalItems={cart.totalItems}
+          totalPrice={cart.totalPrice}
+          onClose={() => cart.setIsOpen(false)}
+          onAdd={cart.addItem}
+          onRemove={cart.removeItem}
+          onClear={cart.clearCart}
+        />
       </div>
     </>
   )
