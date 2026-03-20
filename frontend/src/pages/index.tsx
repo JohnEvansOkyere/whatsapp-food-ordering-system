@@ -6,7 +6,7 @@ import FoodCard from '@/components/FoodCard'
 import CartDrawer from '@/components/CartDrawer'
 import FloatingCart from '@/components/FloatingCart'
 import { useCart } from '@/hooks/useCart'
-import { MENU_ITEMS, RESTAURANT } from '@/lib/menuData'
+import { MENU_ITEMS, RESTAURANT } from '../lib/menuData'
 
 export default function MenuPage() {
   const [activeCategory, setActiveCategory] = useState('all')

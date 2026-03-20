@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { MenuItem } from '@/lib/menuData'
+import { MenuItem } from '../lib/menuData'
 
 export interface CartItem extends MenuItem {
   quantity: number

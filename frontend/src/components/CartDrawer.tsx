@@ -1,6 +1,6 @@
 import { X, Plus, Minus, ShoppingBag, MessageCircle } from 'lucide-react'
-import { CartItem } from '@/hooks/useCart'
-import { RESTAURANT } from '@/lib/menuData'
+import { CartItem } from '../hooks/useCart'
+import { RESTAURANT } from '../lib/menuData'
 import Image from 'next/image'
 
 interface CartDrawerProps {
