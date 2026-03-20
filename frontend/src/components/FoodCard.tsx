@@ -15,13 +15,15 @@ export default function FoodCard({ item, quantity, onAdd, onRemove }: FoodCardPr
     <div className="food-card bg-white rounded-2xl overflow-hidden shadow-sm border border-orange-50">
       {/* Image */}
       <div className="relative h-44 w-full overflow-hidden">
+
         <Image
-          src={item.image}
-          alt={item.name}
-          fill
-          className="object-cover"
-          sizes="(max-width: 768px) 50vw, 33vw"
-        />
+        src={item.image}
+        alt={item.name}
+        fill
+        className="object-cover"
+        sizes="(max-width: 768px) 50vw, 33vw"
+        priority={false}
+      />
         {/* Badges */}
         <div className="absolute top-2 left-2 flex gap-1.5">
           {item.popular && (

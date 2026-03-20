@@ -1,20 +1,36 @@
+"""
+Order service.
+Creates orders in Supabase, then fires WhatsApp receipt + owner notification.
+"""
+
 import uuid
+import logging
 from datetime import datetime, timezone
 from app.database import get_supabase
-from app.schemas.order import CreateOrderSchema, OrderResponseSchema, OrderStatus, OrderSummary
-from app.services.whatsapp import notify_owner_new_order, send_order_confirmation_to_customer
-import logging
+from app.schemas.order import (
+    CreateOrderSchema,
+    OrderResponseSchema,
+    OrderItemSchema,
+    OrderStatus,
+)
+from app.services.whatsapp import (
+    send_order_receipt_to_customer,
+    send_order_notification_to_owner,
+)
 
 logger = logging.getLogger(__name__)
 
 
 async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
-    """Create a new order in Supabase and notify owner + customer."""
+    """
+    1. Save order to Supabase
+    2. Send POS receipt to customer on WhatsApp
+    3. Send order notification to owner on WhatsApp
+    """
     supabase = get_supabase()
     order_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
-    # Serialize items for storage
     items_json = [item.model_dump() for item in data.items]
 
     row = {
@@ -33,44 +49,33 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
     result = supabase.table("orders").insert(row).execute()
 
     if not result.data:
-        raise Exception("Failed to insert order into database")
+        raise Exception("Failed to insert order into Supabase")
 
-    created = result.data[0]
-
-    # Build summary for notifications
-    summary = OrderSummary(
-        order_id=order_id,
+    order = OrderResponseSchema(
+        id=order_id,
         customer_phone=data.customer_phone,
         customer_name=data.customer_name,
         delivery_address=data.delivery_address,
         items=data.items,
         total_amount=data.total_amount,
         payment_method=data.payment_method,
+        status=OrderStatus.pending,
+        notes=data.notes,
+        created_at=datetime.fromisoformat(now),
     )
 
-    # Fire notifications (don't block on failure)
+    # Fire WhatsApp messages — don't block on failure
     try:
-        await notify_owner_new_order(summary)
+        await send_order_receipt_to_customer(order)
     except Exception as e:
-        logger.error(f"Owner notification failed: {e}")
+        logger.error(f"Receipt send failed for order {order_id}: {e}")
 
     try:
-        await send_order_confirmation_to_customer(data.customer_phone, summary)
+        await send_order_notification_to_owner(order)
     except Exception as e:
-        logger.error(f"Customer confirmation failed: {e}")
+        logger.error(f"Owner notification failed for order {order_id}: {e}")
 
-    return OrderResponseSchema(
-        id=created["id"],
-        customer_phone=created["customer_phone"],
-        customer_name=created.get("customer_name"),
-        delivery_address=created["delivery_address"],
-        items=data.items,
-        total_amount=created["total_amount"],
-        payment_method=created["payment_method"],
-        status=OrderStatus(created["status"]),
-        notes=created.get("notes"),
-        created_at=datetime.fromisoformat(created["created_at"]),
-    )
+    return order
 
 
 async def get_order(order_id: str) -> OrderResponseSchema | None:
@@ -82,7 +87,6 @@ async def get_order(order_id: str) -> OrderResponseSchema | None:
         return None
 
     row = result.data[0]
-    from app.schemas.order import OrderItemSchema
     items = [OrderItemSchema(**i) for i in row["items"]]
 
     return OrderResponseSchema(
@@ -100,7 +104,7 @@ async def get_order(order_id: str) -> OrderResponseSchema | None:
 
 
 async def update_order_status(order_id: str, status: OrderStatus) -> bool:
-    """Update order status (called from admin or webhook)."""
+    """Update order status."""
     supabase = get_supabase()
     result = (
         supabase.table("orders")
