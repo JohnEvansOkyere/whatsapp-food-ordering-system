@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { MenuItem } from '@/lib/menuData'
+import { MenuItem } from '../lib/menuData'
 
 export interface CartItem extends MenuItem {
   quantity: number
@@ -45,20 +45,6 @@ export function useCart() {
   const totalItems = items.reduce((sum, i) => sum + i.quantity, 0)
   const totalPrice = items.reduce((sum, i) => sum + i.price * i.quantity, 0)
 
-  const buildWhatsAppMessage = useCallback(
-    (restaurantWhatsapp: string) => {
-      const orderLines = items
-        .map(i => `• ${i.quantity}x ${i.name} — GHS ${(i.price * i.quantity).toFixed(2)}`)
-        .join('\n')
-
-      const message = `🍽️ *New Order*\n\n${orderLines}\n\n*Total: GHS ${totalPrice.toFixed(2)}*\n\nDelivery address: `
-
-      const encoded = encodeURIComponent(message)
-      return `https://wa.me/${restaurantWhatsapp}?text=${encoded}`
-    },
-    [items, totalPrice]
-  )
-
   return {
     items,
     addItem,
@@ -69,6 +55,5 @@ export function useCart() {
     totalPrice,
     isOpen,
     setIsOpen,
-    buildWhatsAppMessage,
   }
 }
