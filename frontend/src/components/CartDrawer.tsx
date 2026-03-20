@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Plus, Minus, ShoppingBag, Loader2 } from 'lucide-react'
-import { CartItem } from '@/hooks/useCart'
+import { CartItem } from '../hooks/useCart'
 import Image from 'next/image'
 
 interface CartDrawerProps {

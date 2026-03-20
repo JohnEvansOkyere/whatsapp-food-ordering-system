@@ -1,6 +1,6 @@
 import Image from 'next/image'
 import { Plus, Minus, Flame } from 'lucide-react'
-import { MenuItem } from '@/lib/menuData'
+import { MenuItem } from '../lib/menuData'
 import clsx from 'clsx'
 
 interface FoodCardProps {

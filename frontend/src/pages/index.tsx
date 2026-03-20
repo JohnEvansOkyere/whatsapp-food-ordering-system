@@ -1,12 +1,12 @@
 import { useState, useMemo } from 'react'
 import Head from 'next/head'
-import Header from '@/components/Header'
-import CategoryNav from '@/components/CategoryNav'
-import FoodCard from '@/components/FoodCard'
-import CartDrawer from '@/components/CartDrawer'
-import FloatingCart from '@/components/FloatingCart'
-import { useCart } from '@/hooks/useCart'
-import { MENU_ITEMS, RESTAURANT } from '@/lib/menuData'
+import Header from '../components/Header'
+import CategoryNav from '../components/CategoryNav'
+import FoodCard from '../components/FoodCard'
+import CartDrawer from '../components/CartDrawer'
+import FloatingCart from '../components/FloatingCart'
+import { useCart } from '../hooks/useCart'
+import { MENU_ITEMS, RESTAURANT } from '../lib/menuData'
 
 export default function MenuPage() {
   const [activeCategory, setActiveCategory] = useState('all')
