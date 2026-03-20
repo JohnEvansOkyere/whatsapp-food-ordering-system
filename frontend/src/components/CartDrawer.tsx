@@ -72,7 +72,7 @@ export default function CartDrawer({
     setLoading(true)
     setError('')
 
-    const orderItems = items.map(item => ({
+    const orderItems = items.map((item: CartItem) => ({
       item_id: item.id,
       name: item.name,
       quantity: item.quantity,
