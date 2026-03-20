@@ -1,4 +1,4 @@
-import { CATEGORIES } from '../lib/menuData'
+import { CATEGORIES } from '@/lib/menuData'
 import clsx from 'clsx'
 
 interface CategoryNavProps {

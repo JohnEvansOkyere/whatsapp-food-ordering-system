@@ -1,5 +1,5 @@
 import { ShoppingBag, Clock, MapPin } from 'lucide-react'
-import { RESTAURANT } from '../lib/menuData'
+import { RESTAURANT } from '@/lib/menuData'
 
 interface HeaderProps {
   totalItems: number
