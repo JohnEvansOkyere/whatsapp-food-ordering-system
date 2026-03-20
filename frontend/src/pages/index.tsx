@@ -120,7 +120,7 @@ export default function MenuPage() {
           onClose={() => cart.setIsOpen(false)}
           onAdd={cart.addItem}
           onRemove={cart.removeItem}
-          buildWhatsAppMessage={cart.buildWhatsAppMessage}
+          onClear={cart.clearCart}
         />
       </div>
     </>

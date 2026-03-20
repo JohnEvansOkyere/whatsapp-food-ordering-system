@@ -112,16 +112,16 @@ export default function MenuPage() {
         />
 
         {/* Cart drawer */}
-        <CartDrawer
-          isOpen={cart.isOpen}
-          items={cart.items}
-          totalItems={cart.totalItems}
-          totalPrice={cart.totalPrice}
-          onClose={() => cart.setIsOpen(false)}
-          onAdd={cart.addItem}
-          onRemove={cart.removeItem}
-          buildWhatsAppMessage={cart.buildWhatsAppMessage}
-        />
+       <CartDrawer
+        isOpen={cart.isOpen}
+        items={cart.items}
+        totalItems={cart.totalItems}
+        totalPrice={cart.totalPrice}
+        onClose={() => cart.setIsOpen(false)}
+        onAdd={cart.addItem}
+        onRemove={cart.removeItem}
+        onClear={cart.clearCart}
+      />
       </div>
     </>
   )
