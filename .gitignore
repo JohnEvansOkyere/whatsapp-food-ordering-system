@@ -14,7 +14,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# lib/ - removed, was blocking frontend/src/lib
 lib64/
 parts/
 sdist/
