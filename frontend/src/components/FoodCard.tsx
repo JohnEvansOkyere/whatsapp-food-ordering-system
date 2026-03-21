@@ -1,7 +1,6 @@
 import Image from 'next/image'
 import { Plus, Minus, Flame } from 'lucide-react'
 import { MenuItem } from '../lib/menuData'
-import clsx from 'clsx'
 
 interface FoodCardProps {
   item: MenuItem
@@ -12,75 +11,60 @@ interface FoodCardProps {
 
 export default function FoodCard({ item, quantity, onAdd, onRemove }: FoodCardProps) {
   return (
-    <div className="food-card bg-white rounded-2xl overflow-hidden shadow-sm border border-orange-50">
+    <div className="food-card bg-white rounded-xl overflow-hidden shadow-sm border border-orange-50 max-w-[260px] mx-auto">
       {/* Image */}
-      <div className="relative h-44 w-full overflow-hidden">
-
+      <div className="relative w-full aspect-square overflow-hidden">
         <Image
-        src={item.image}
-        alt={item.name}
-        fill
-        className="object-cover"
-        sizes="(max-width: 768px) 50vw, 33vw"
-        priority={false}
-      />
-        {/* Badges */}
-        <div className="absolute top-2 left-2 flex gap-1.5">
-          {item.popular && (
-            <span className="bg-brand-yellow text-brand-dark text-xs font-black px-2 py-0.5 rounded-full">
-              🔥 Popular
-            </span>
-          )}
-          {item.spicy && !item.popular && (
-            <span className="bg-brand-red text-white text-xs font-bold px-2 py-0.5 rounded-full flex items-center gap-0.5">
-              <Flame size={10} /> Spicy
-            </span>
-          )}
-        </div>
-      </div>
+          src={item.image}
+          alt={item.name}
+          fill
+          className="object-cover hover:scale-105 transition-transform duration-500"
+          sizes="33vw"
+          priority={false}
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent" />
 
-      {/* Content */}
-      <div className="p-3">
-        <h3 className="font-bold text-brand-dark text-sm leading-tight mb-1">
-          {item.name}
-        </h3>
-        <p className="text-xs text-gray-500 leading-relaxed mb-3 line-clamp-2">
-          {item.description}
-        </p>
-
-        {/* Price + Controls */}
-        <div className="flex items-center justify-between">
-          <span className="text-brand-orange font-black text-base">
-            GHS {item.price}
+        {/* Badge */}
+        {item.popular && (
+          <span className="absolute top-1.5 left-1.5 bg-brand-yellow text-brand-dark font-black px-1.5 py-0.5 rounded-full text-[9px] shadow">
+            🔥
           </span>
+        )}
+        {item.spicy && !item.popular && (
+          <span className="absolute top-1.5 left-1.5 bg-brand-red text-white font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow">
+            <Flame size={8} />
+          </span>
+        )}
 
+        {/* Add/Remove */}
+        <div className="absolute bottom-1.5 right-1.5">
           {quantity === 0 ? (
             <button
               onClick={onAdd}
-              className="bg-brand-orange text-white w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-transform shadow-md"
+              className="bg-brand-orange text-white w-7 h-7 rounded-full flex items-center justify-center active:scale-90 transition-transform shadow-md"
             >
-              <Plus size={16} strokeWidth={3} />
+              <Plus size={14} strokeWidth={3} />
             </button>
           ) : (
-            <div className="flex items-center gap-2 bg-brand-dark rounded-full px-2 py-1">
-              <button
-                onClick={onRemove}
-                className="text-white active:scale-90 transition-transform"
-              >
-                <Minus size={14} strokeWidth={3} />
+            <div className="flex items-center gap-1 bg-brand-dark rounded-full px-1.5 py-1 shadow-md">
+              <button onClick={onRemove} className="text-white active:scale-90 transition-transform">
+                <Minus size={10} strokeWidth={3} />
               </button>
-              <span className="text-white font-black text-sm w-4 text-center">
-                {quantity}
-              </span>
-              <button
-                onClick={onAdd}
-                className="text-brand-yellow active:scale-90 transition-transform"
-              >
-                <Plus size={14} strokeWidth={3} />
+              <span className="text-white font-black text-xs w-3 text-center">{quantity}</span>
+              <button onClick={onAdd} className="text-brand-yellow active:scale-90 transition-transform">
+                <Plus size={10} strokeWidth={3} />
               </button>
             </div>
           )}
         </div>
+      </div>
+
+      {/* Text */}
+      <div className="p-3">
+        <h3 className="font-bold text-brand-dark leading-tight line-clamp-2 text-sm mb-1">
+          {item.name}
+        </h3>
+        <span className="text-brand-orange font-black text-sm">GHS {item.price}</span>
       </div>
     </div>
   )

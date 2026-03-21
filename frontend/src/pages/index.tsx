@@ -57,7 +57,7 @@ export default function MenuPage() {
         />
 
         {/* Menu Grid */}
-        <main className="px-4 pt-4 pb-32">
+        <main className="mx-auto max-w-6xl px-4 pt-4 pb-32">
           {activeCategory === 'all' && groupedItems ? (
             // Grouped view
             Object.entries(groupedItems).map(([category, items]) => (
@@ -68,7 +68,7 @@ export default function MenuPage() {
                 >
                   {categoryLabels[category] || category}
                 </h2>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 justify-items-center">
                   {items.map(item => (
                     <FoodCard
                       key={item.id}
@@ -83,7 +83,7 @@ export default function MenuPage() {
             ))
           ) : (
             // Filtered view
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 justify-items-center">
               {filteredItems.map(item => (
                 <FoodCard
                   key={item.id}
