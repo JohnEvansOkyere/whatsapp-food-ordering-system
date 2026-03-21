@@ -1,122 +1,49 @@
-import { useState, useMemo } from 'react'
-import Head from 'next/head'
-import Header from '../components/Header'
-import CategoryNav from '../components/CategoryNav'
-import FoodCard from '../components/FoodCard'
-import CartDrawer from '../components/CartDrawer'
-import FloatingCart from '../components/FloatingCart'
-import { useCart } from '../hooks/useCart'
-import { MENU_ITEMS, RESTAURANT } from '../lib/menuData'
+import { ShoppingBag, Clock, MapPin } from 'lucide-react'
+import { RESTAURANT } from '../lib/menuData'
 
-export default function MenuPage() {
-  const [activeCategory, setActiveCategory] = useState('all')
-  const cart = useCart()
+interface HeaderProps {
+  totalItems: number
+  onCartOpen: () => void
+}
 
-  const filteredItems = useMemo(() => {
-    if (activeCategory === 'all') return MENU_ITEMS
-    return MENU_ITEMS.filter(item => item.category === activeCategory)
-  }, [activeCategory])
-
-  const groupedItems = useMemo(() => {
-    if (activeCategory !== 'all') return null
-    const groups: Record<string, typeof MENU_ITEMS> = {}
-    MENU_ITEMS.forEach(item => {
-      if (!groups[item.category]) groups[item.category] = []
-      groups[item.category].push(item)
-    })
-    return groups
-  }, [activeCategory])
-
-  const categoryLabels: Record<string, string> = {
-    rice: '🍚 Rice Dishes',
-    chicken: '🍗 Chicken',
-    pizza: '🍕 Pizza',
-    sides: '🍟 Sides',
-    drinks: '🥤 Drinks',
-  }
-
+export default function Header({ totalItems, onCartOpen }: HeaderProps) {
   return (
-    <>
-      <Head>
-        <title>{`${RESTAURANT.name} — Order Online`}</title>
-        <meta name="description" content={RESTAURANT.tagline} />
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-        <link rel="icon" href="/favicon.ico" />
-      </Head>
-
-      <div className="min-h-screen bg-brand-cream">
-        <Header
-          totalItems={cart.totalItems}
-          onCartOpen={() => cart.setIsOpen(true)}
-        />
-
-        <CategoryNav
-          active={activeCategory}
-          onSelect={setActiveCategory}
-        />
-
-        <main className="px-3 pt-4 pb-32">
-          {activeCategory === 'all' && groupedItems ? (
-            Object.entries(groupedItems).map(([category, items]) => (
-              <section key={category} className="mb-6">
-                <h2
-                  className="text-base font-black text-brand-dark mb-2.5"
-                  style={{ fontFamily: 'var(--font-display)' }}
-                >
-                  {categoryLabels[category] || category}
-                </h2>
-                <div className="grid grid-cols-3 gap-2">
-                  {items.map(item => (
-                    <FoodCard
-                      key={item.id}
-                      item={item}
-                      quantity={cart.getQuantity(item.id)}
-                      onAdd={() => cart.addItem(item)}
-                      onRemove={() => cart.removeItem(item.id)}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))
-          ) : (
-            <div className="grid grid-cols-3 gap-2">
-              {filteredItems.map(item => (
-                <FoodCard
-                  key={item.id}
-                  item={item}
-                  quantity={cart.getQuantity(item.id)}
-                  onAdd={() => cart.addItem(item)}
-                  onRemove={() => cart.removeItem(item.id)}
-                />
-              ))}
-            </div>
+    <header className="sticky top-0 z-40 bg-brand-dark shadow-lg">
+      <div className="px-4 py-3 flex items-center justify-between">
+        <div>
+          <h1
+            className="text-2xl font-black text-brand-yellow leading-none"
+            style={{ fontFamily: 'var(--font-display)' }}
+          >
+            {RESTAURANT.name}
+          </h1>
+          <p className="text-xs text-orange-300 mt-0.5 font-medium">
+            {RESTAURANT.tagline}
+          </p>
+        </div>
+        <button
+          onClick={onCartOpen}
+          className="relative flex items-center gap-2 bg-brand-orange text-white px-4 py-2.5 rounded-xl font-semibold text-sm active:scale-95 transition-transform"
+        >
+          <ShoppingBag size={18} />
+          <span>Cart</span>
+          {totalItems > 0 && (
+            <span className="absolute -top-2 -right-2 bg-brand-yellow text-brand-dark text-xs font-black w-5 h-5 rounded-full flex items-center justify-center">
+              {totalItems}
+            </span>
           )}
-
-          {filteredItems.length === 0 && (
-            <div className="py-20 text-center">
-              <div className="text-5xl mb-3">🍽️</div>
-              <p className="text-gray-400 font-medium">No items in this category</p>
-            </div>
-          )}
-        </main>
-
-        <FloatingCart
-          totalItems={cart.totalItems}
-          totalPrice={cart.totalPrice}
-          onOpen={() => cart.setIsOpen(true)}
-        />
-
-        <CartDrawer
-          isOpen={cart.isOpen}
-          items={cart.items}
-          totalItems={cart.totalItems}
-          totalPrice={cart.totalPrice}
-          onClose={() => cart.setIsOpen(false)}
-          onAdd={cart.addItem}
-          onRemove={cart.removeItem}
-          onClear={cart.clearCart}
-        />
+        </button>
       </div>
-    </>
+      <div className="px-4 pb-2.5 flex items-center gap-4 text-xs text-orange-200">
+        <span className="flex items-center gap-1">
+          <MapPin size={12} />
+          {RESTAURANT.address}
+        </span>
+        <span className="flex items-center gap-1">
+          <Clock size={12} />
+          {RESTAURANT.hours}
+        </span>
+      </div>
+    </header>
   )
 }
