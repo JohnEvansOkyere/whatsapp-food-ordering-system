@@ -79,7 +79,7 @@ export const MENU_ITEMS: MenuItem[] = [
     name: 'Grilled Chicken (2 pcs)',
     description: 'Marinated in local spices, slow-grilled to perfection. Served with chips and pepper sauce.',
     price: 55,
-    image: 'https://images.unsplash.com/photo-1598103442097-8b74394b95c4?w=600&q=80',
+    image: 'https://images.unsplash.com/photo-1532550907401-a500c9a57435?w=600&q=80',
     category: 'chicken',
     popular: true,
   },
