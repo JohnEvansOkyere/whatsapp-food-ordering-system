@@ -34,8 +34,12 @@ async def send_text_message(to: str, body: str) -> bool:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             return True
-        except httpx.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             logger.error(f"WhatsApp send failed to {to}: {e}")
+            logger.error(f"Response body: {e.response.text}")
+            return False
+        except httpx.HTTPError as e:
+            logger.error(f"WhatsApp HTTP error to {to}: {e}")
             return False
 
 
