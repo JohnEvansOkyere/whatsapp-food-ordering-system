@@ -18,6 +18,7 @@ import re
 from app.config import get_settings
 from app.services.ai_service import get_ai_response
 from app.services import session_store as store
+from app.services.menu_service import fetch_menu_items, normalize_price
 from app.services.order_parser import (
     format_order_for_confirmation,
     interpret_order_message,
@@ -49,35 +50,34 @@ YOUR PERSONALITY:
 - Never make up menu items or prices
 
 YOUR ROLE IN THIS CONVERSATION:
-You help customers order food. The ordering flow is handled by the system —
-your job in freeform conversation is to:
-- Answer questions about the restaurant (hours, location, delivery areas)
-- Help undecided customers pick something
+You are responsible for handling customer questions about food ordering end to end.
+Your job in freeform conversation is to:
+- Answer questions about the menu, prices, ingredients, spice level, portions, delivery, payment, location, hours, and order flow
+- Help undecided customers choose food naturally
 - If a customer says they are hungry, suggest 2 or 3 real menu items naturally
 - If a customer says thank you, no thanks, or not now, reply warmly like a human rep
 - Handle small talk warmly and redirect to ordering
 - If a customer seems confused, offer the menu link: {menu_url}
 - If a customer asks what is available, mention only real menu items or send the menu link
 - If a customer asks for a recommendation, suggest 2 or 3 real items with prices
+- If the customer asks something you cannot confirm from the facts below, do not guess. Tell them to reach customer support on {support_whatsapp}
 
 RESTAURANT INFO:
 - Location: Osu, Accra
 - Hours: Mon–Sun, 10am–10pm
 - Delivery: Within Accra, free delivery
+- Usual delivery time: 45–60 minutes depending on traffic
 - Payment: MoMo or Cash on delivery
 
-MENU HIGHLIGHTS (share when asked):
-🍚 Jollof Rice + Chicken — GHS 45
-🍚 Waakye Special — GHS 40
-🍗 Grilled Chicken (2 pcs) — GHS 55
-🍗 Spicy Wings (6 pcs) — GHS 48
-🍕 BBQ Chicken Pizza — GHS 85
-🍟 Chips Large — GHS 20
-🥤 Sobolo — GHS 12
+LIVE MENU AND DESCRIPTIONS:
+{menu_context}
 
 Full menu with photos: {menu_url}
+Customer support: {support_whatsapp}
 
 IMPORTANT: Keep it short and human. This is WhatsApp.
+- Never invent details that are not in the restaurant info or menu context above
+- If you are unsure, say so briefly and direct the customer to {support_whatsapp}
 """
 
 BROWSE_SIGNALS = [
@@ -108,6 +108,11 @@ PAUSE_SIGNALS = [
 STATUS_SIGNALS = [
     "status of my order", "what's the status", "whats the status", "order status",
     "where is my order", "track my order", "how far is my order", "is my order ready",
+]
+UNCERTAIN_REPLY_SIGNALS = [
+    "i'm not sure", "i am not sure", "i dont know", "i don't know", "not certain",
+    "can't confirm", "cannot confirm", "having trouble right now", "try again in a moment",
+    "call us directly", "please try again later",
 ]
 
 
@@ -219,10 +224,12 @@ async def _handle_ordering_side_message(sender: str, text: str, settings) -> str
 
 async def _handle_order_status_request(sender: str) -> str:
     latest_order = await get_latest_order_status(sender)
+    settings = get_settings()
     if not latest_order:
         return (
             "I can’t see any recent order on this WhatsApp number yet.\n\n"
-            "If you placed it from the web app, make sure you used this same number at checkout."
+            "If you placed it from the web app, make sure you used this same number at checkout.\n"
+            f"If you still need help, please reach customer support on {settings.customer_support_whatsapp}."
         )
 
     status_value = str(latest_order.get("status", "pending")).lower()
@@ -507,7 +514,7 @@ async def _handle_payment_input(sender: str, text_lower: str, settings) -> str:
         store.set_state(sender, "collecting_payment")
         return (
             "Sorry, something went wrong placing your order. 😔\n"
-            "Please try again or call us directly."
+            f"Please try again or reach customer support on {settings.customer_support_whatsapp}."
         )
 
 
@@ -546,8 +553,15 @@ async def _finalise_order(sender: str, payment: str, settings):
 
 async def _handle_freeform(sender: str, text: str, settings) -> str:
     """Handle messages outside the ordering flow with AI."""
+    known_reply = _handle_known_question(text.lower().strip(), settings)
+    if known_reply:
+        store.add_message(sender, "user", text)
+        store.add_message(sender, "assistant", known_reply)
+        return known_reply
+
     store.add_message(sender, "user", text)
     reply = await _ai_freeform(sender, text, settings)
+    reply = _normalize_freeform_reply(reply, settings)
     store.add_message(sender, "assistant", reply)
 
     order_signals = ["order", "buy", "want", "hungry", "food", "eat"]
@@ -559,10 +573,7 @@ async def _handle_freeform(sender: str, text: str, settings) -> str:
 
 async def _ai_freeform(sender: str, text: str, settings) -> str:
     """Call AI for natural freeform conversation."""
-    system = AMA_SYSTEM_PROMPT.format(
-        restaurant_name=settings.restaurant_name,
-        menu_url=settings.menu_web_app_url,
-    )
+    system = await _build_freeform_system_prompt(settings)
     history = store.get_history(sender)
 
     return await get_ai_response(
@@ -570,4 +581,77 @@ async def _ai_freeform(sender: str, text: str, settings) -> str:
         system_prompt=system,
         max_tokens=250,
         temperature=0.75,
+    )
+
+
+async def _build_freeform_system_prompt(settings) -> str:
+    menu_items = await fetch_menu_items()
+    menu_context = _build_menu_context(menu_items)
+    return AMA_SYSTEM_PROMPT.format(
+        restaurant_name=settings.restaurant_name,
+        menu_url=settings.menu_web_app_url,
+        support_whatsapp=settings.customer_support_whatsapp,
+        menu_context=menu_context,
+    )
+
+
+def _build_menu_context(menu_items: list[dict]) -> str:
+    if not menu_items:
+        return "No live menu items were available."
+
+    lines: list[str] = []
+    for item in menu_items:
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        price = normalize_price(item)
+        description = str(item.get("description", "")).strip()
+        category = str(item.get("category", "other")).strip() or "other"
+        if description:
+            lines.append(f"- {name} ({category}) — GHS {price:.2f}: {description}")
+        else:
+            lines.append(f"- {name} ({category}) — GHS {price:.2f}")
+    return "\n".join(lines)
+
+
+def _handle_known_question(text_lower: str, settings) -> str | None:
+    support = settings.customer_support_whatsapp
+
+    if any(word in text_lower for word in ["support", "help line", "customer care", "customer support", "contact", "phone number"]):
+        return f"For extra help, please reach customer support on {support}."
+
+    if any(word in text_lower for word in ["open", "close", "hours", "time do you", "when are you", "what time"]):
+        return "We’re open every day from 10am to 10pm."
+
+    if any(word in text_lower for word in ["where are you", "location", "located", "address", "where is the restaurant"]):
+        return "We’re in Osu, Accra."
+
+    if "delivery" in text_lower or "deliver" in text_lower:
+        return "We deliver within Accra, delivery is free, and it usually takes about 45 to 60 minutes depending on traffic."
+
+    if any(word in text_lower for word in ["payment", "pay", "momo", "cash"]):
+        return "You can pay by MoMo or cash on delivery."
+
+    if any(word in text_lower for word in ["menu link", "full menu", "menu please", "send menu"]):
+        return f"Sure, here is our full menu with photos:\n{settings.menu_web_app_url}"
+
+    return None
+
+
+def _normalize_freeform_reply(reply: str, settings) -> str:
+    cleaned = reply.strip()
+    if not cleaned:
+        return _support_handoff_message(settings)
+
+    lower = cleaned.lower()
+    if any(signal in lower for signal in UNCERTAIN_REPLY_SIGNALS):
+        return _support_handoff_message(settings)
+
+    return cleaned
+
+
+def _support_handoff_message(settings) -> str:
+    return (
+        "I’m not fully sure about that one. "
+        f"Please reach out to customer support on {settings.customer_support_whatsapp}."
     )

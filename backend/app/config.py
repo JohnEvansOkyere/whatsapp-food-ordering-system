@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     menu_web_app_url: str = "https://your-menu-app.vercel.app"
     owner_whatsapp: str
     restaurant_name: str = "Accra Eats"
+    customer_support_whatsapp: str = "+233544954643"
 
     # CORS
     allowed_origins: str = "http://localhost:3000"
