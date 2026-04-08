@@ -14,10 +14,17 @@ All AI calls go through ai_service.py (Groq → OpenAI → Gemini cascade).
 """
 
 import logging
+import re
 from app.config import get_settings
 from app.services.ai_service import get_ai_response
 from app.services import session_store as store
-from app.services.order_parser import parse_order_from_text, format_order_for_confirmation
+from app.services.order_parser import (
+    format_order_for_confirmation,
+    interpret_order_message,
+    match_candidate_selection,
+    extract_quantity,
+    make_order_line,
+)
 from app.services.customer_service import (
     get_customer,
     get_last_order,
@@ -33,9 +40,10 @@ AMA_SYSTEM_PROMPT = """\
 You are Ama, the friendly WhatsApp food ordering assistant for {restaurant_name} in Accra, Ghana.
 
 YOUR PERSONALITY:
-- Warm, helpful, natural — like a real Ghanaian cashier
-- Short replies — WhatsApp is not email. 1–3 sentences max
-- Occasional light expressions are fine (Chale, No problem!, Ei!)
+- Warm, helpful, natural — like a real Ghanaian restaurant cashier
+- Sound like a proper restaurant rep, not a bot or call center script
+- Short replies — WhatsApp is not email. 1–3 sentences max unless listing menu suggestions
+- Occasional light local expressions are fine (Chale, sure, no problem)
 - Never sound robotic or scripted
 - Never make up menu items or prices
 
@@ -46,6 +54,8 @@ your job in freeform conversation is to:
 - Help undecided customers pick something
 - Handle small talk warmly and redirect to ordering
 - If a customer seems confused, offer the menu link: {menu_url}
+- If a customer asks what is available, mention only real menu items or send the menu link
+- If a customer asks for a recommendation, suggest 2 or 3 real items with prices
 
 RESTAURANT INFO:
 - Location: Osu, Accra
@@ -67,6 +77,26 @@ Full menu with photos: {menu_url}
 IMPORTANT: Keep it short and human. This is WhatsApp.
 """
 
+BROWSE_SIGNALS = [
+    "browse", "menu", "see", "show", "look", "photo", "picture",
+    "not sure", "idk", "don't know", "dont know", "what do you have",
+    "what's on the menu", "whats on the menu",
+]
+REORDER_SIGNALS = ["same", "again", "repeat", "last", "previous"]
+GREETING_WORDS = {
+    "hi", "hello", "hey", "yo", "hola", "morning", "afternoon", "evening",
+    "good", "sup", "please",
+}
+ORDER_HINTS = [
+    "jollof", "waakye", "fried rice", "pizza", "chips", "plantain",
+    "sobolo", "malt", "water", "wings", "grilled chicken", "fried chicken",
+    "beef", "chicken", "rice",
+]
+ORDER_INTENT_SIGNALS = [
+    "i want", "i'll have", "give me", "order", "get me", "i need",
+    "can i get", "let me get", "send me",
+]
+
 
 async def handle_incoming_message(sender: str, text: str, branch_id: str | None = None) -> str:
     """
@@ -77,124 +107,236 @@ async def handle_incoming_message(sender: str, text: str, branch_id: str | None 
     settings = get_settings()
     state = store.get_state(sender)
 
-    # Store branch ID if provided (from QR code)
     if branch_id:
         store.set_branch_id(sender, branch_id)
 
     text_lower = text.lower().strip()
 
-    # ── GREETING STATE ─────────────────────────────────────────────────────────
     if state == "greeting":
-        return await _handle_greeting(sender, settings)
+        return await _handle_greeting(sender, text, settings)
 
-    # ── ASKED INTENT ───────────────────────────────────────────────────────────
     if state == "asked_intent":
-        return await _handle_intent_response(sender, text_lower, settings)
+        return await _handle_intent_response(sender, text, settings)
 
-    # ── TAKING ORDER ───────────────────────────────────────────────────────────
     if state == "taking_order":
         return await _handle_order_input(sender, text, settings)
 
-    # ── CONFIRMING ORDER ───────────────────────────────────────────────────────
+    if state == "clarifying_order":
+        return await _handle_order_clarification(sender, text, settings)
+
     if state == "confirming_order":
         return await _handle_order_confirmation(sender, text_lower, settings)
 
-    # ── COLLECTING ADDRESS ─────────────────────────────────────────────────────
     if state == "collecting_address":
         return await _handle_address_input(sender, text, settings)
 
-    # ── COLLECTING PAYMENT ─────────────────────────────────────────────────────
     if state == "collecting_payment":
         return await _handle_payment_input(sender, text_lower, settings)
 
-    # ── DONE / FALLBACK ────────────────────────────────────────────────────────
     return await _handle_freeform(sender, text, settings)
 
 
-# ── STATE HANDLERS ─────────────────────────────────────────────────────────────
+def _is_simple_greeting(text: str) -> bool:
+    cleaned = re.sub(r"[^a-z0-9'\s]", " ", text.lower()).split()
+    if not cleaned:
+        return True
+    return len(cleaned) <= 4 and all(token in GREETING_WORDS for token in cleaned)
 
-async def _handle_greeting(sender: str, settings) -> str:
-    """First message — check if returning customer, personalise greeting."""
+
+def _wants_to_browse(text_lower: str) -> bool:
+    return any(word in text_lower for word in BROWSE_SIGNALS)
+
+
+def _looks_like_order_request(text_lower: str) -> bool:
+    if not text_lower:
+        return False
+    if extract_quantity(text_lower) is not None:
+        return True
+    if any(phrase in text_lower for phrase in ORDER_INTENT_SIGNALS):
+        return True
+    return any(hint in text_lower for hint in ORDER_HINTS)
+
+
+async def _try_interpret_order(sender: str, text: str, settings) -> str | None:
+    if not _looks_like_order_request(text.lower().strip()):
+        return None
+    interp = await interpret_order_message(text)
+    if interp["kind"] in ("ready", "need_pick", "need_quantity"):
+        return await _apply_order_interpretation(sender, interp, settings)
+    return None
+
+
+async def _handle_greeting(sender: str, text: str, settings) -> str:
+    """First message — route obvious order/menu requests before sending a greeting."""
+    text_lower = text.lower().strip()
     customer = await get_customer(sender)
+    last_order = await get_last_order(sender) if customer else None
+
+    if _wants_to_browse(text_lower):
+        store.set_state(sender, "taking_order")
+        return (
+            f"Sure, here is our menu with photos.\n\n"
+            f"{settings.menu_web_app_url}\n\n"
+            f"When you're ready, send me the dish and quantity here or place the order on the site."
+        )
+
+    order_reply = await _try_interpret_order(sender, text, settings)
+    if order_reply:
+        return order_reply
+
+    if customer and last_order and any(word in text_lower for word in REORDER_SIGNALS):
+        store.set_pending_items(sender, last_order["items"])
+        store.set_state(sender, "confirming_order")
+        return format_order_for_confirmation(last_order["items"], settings.restaurant_name)
 
     if customer:
-        last_order = await get_last_order(sender)
         reply = format_returning_customer_greeting(customer, last_order, settings.restaurant_name)
-
-        # If they have a last order, offer quick reorder path
-        if last_order:
+        if last_order and _is_simple_greeting(text_lower):
             store.set_pending_items(sender, last_order["items"])
             store.set_state(sender, "asked_intent")
             return reply
+        if _is_simple_greeting(text_lower):
+            store.set_state(sender, "asked_intent")
+            return reply
 
-    # New customer greeting
-    reply = (
-        f"👋 Welcome to *{settings.restaurant_name}*!\n\n"
-        f"I'm Ama, your food assistant. 😊\n\n"
-        f"Do you know what you'd like to order, "
-        f"or would you like to browse our menu first?"
-    )
-    store.set_state(sender, "asked_intent")
-    return reply
-
-
-async def _handle_intent_response(sender: str, text_lower: str, settings) -> str:
-    """Customer responded to 'do you know what you want?' question."""
-
-    # Wants to browse
-    browse_signals = ["browse", "menu", "see", "show", "look", "photo", "picture", "no", "nope", "not sure", "idk", "don't know", "dont know"]
-    if any(word in text_lower for word in browse_signals):
-        store.set_state(sender, "taking_order")
+    if _is_simple_greeting(text_lower):
+        store.set_state(sender, "asked_intent")
         return (
-            f"Sure! Here's our menu with photos 📸\n\n"
-            f"{settings.menu_web_app_url}\n\n"
-            f"Browse, add to cart, and place your order there — "
-            f"your receipt will come straight to WhatsApp. 🧾"
+            f"Hello, welcome to *{settings.restaurant_name}*.\n\n"
+            f"I'm Ama. What can I get for you today?\n"
+            f"If you'd like, I can also send the full menu with photos."
         )
 
-    # Wants to reorder last order
-    reorder_signals = ["same", "again", "repeat", "last", "previous", "yes"]
+    store.set_state(sender, "asked_intent")
+    return await _handle_freeform(sender, text, settings)
+
+
+async def _handle_intent_response(sender: str, text: str, settings) -> str:
+    """Customer responded to 'do you know what you want?' question."""
+    text_lower = text.lower().strip()
+
+    if _wants_to_browse(text_lower) or text_lower in {"no", "nope"}:
+        store.set_state(sender, "taking_order")
+        return (
+            f"Sure, here is our menu with photos.\n\n"
+            f"{settings.menu_web_app_url}\n\n"
+            f"Browse and send me what you'd like, or place the order there and your receipt will come straight to WhatsApp."
+        )
+
     pending = store.get_pending_items(sender)
-    if any(word in text_lower for word in reorder_signals) and pending:
+    if (any(word in text_lower for word in REORDER_SIGNALS) or text_lower in {"yes", "yeah", "yep"}) and pending:
         store.set_state(sender, "confirming_order")
         confirmation = format_order_for_confirmation(pending, settings.restaurant_name)
         return confirmation
 
-    # Knows what they want — start taking order
-    knows_signals = ["i want", "i'll have", "give me", "order", "get me", "i need", "yes", "yeah", "sure", "okay", "ok", "yep"]
-    if any(word in text_lower for word in knows_signals):
-        # If they already typed the order in this message, parse it
-        items = await parse_order_from_text(text_lower)
-        if items:
-            store.set_pending_items(sender, items)
-            store.set_state(sender, "confirming_order")
-            return format_order_for_confirmation(items, settings.restaurant_name)
-
-        # Otherwise ask them to tell us
+    if text_lower in {"yes", "yeah", "yep"}:
         store.set_state(sender, "taking_order")
-        return "Great! What would you like to order? 😊"
+        return (
+            "Alright. Please send the dish and quantity like *2 jollof rice with chicken* "
+            "or *1 waakye*."
+        )
 
-    # Unclear — use AI to respond naturally and re-ask
+    order_reply = await _try_interpret_order(sender, text, settings)
+    if order_reply:
+        return order_reply
+
+    knows_signals = ["i want", "i'll have", "give me", "order", "get me", "i need", "sure", "okay", "ok"]
+    if any(word in text_lower for word in knows_signals):
+        store.set_state(sender, "taking_order")
+        return (
+            "Alright. Please send the dish and quantity like *2 jollof rice with chicken* "
+            "or *1 waakye*."
+        )
+
     store.add_message(sender, "user", text_lower)
     reply = await _ai_freeform(sender, text_lower, settings)
     store.add_message(sender, "assistant", reply)
     return reply
 
 
+async def _apply_order_interpretation(sender, interp, settings) -> str:
+    """Shared: move session forward from interpret_order_message result."""
+    if interp["kind"] == "ready":
+        store.set_pending_items(sender, interp["items"])
+        store.set_state(sender, "confirming_order")
+        store.set_order_clarification(sender, None)
+        return format_order_for_confirmation(interp["items"], settings.restaurant_name)
+
+    if interp["kind"] == "need_pick":
+        store.set_order_clarification(
+            sender,
+            {"phase": "pick_variant", "candidates": interp["candidates"]},
+        )
+        store.set_state(sender, "clarifying_order")
+        return interp["reply_hint"]
+
+    if interp["kind"] == "need_quantity":
+        store.set_order_clarification(
+            sender,
+            {"phase": "quantity", "item": interp["candidates"][0]},
+        )
+        store.set_state(sender, "clarifying_order")
+        return interp["reply_hint"]
+
+    return (
+        "Sorry, I couldn't match that to our menu yet.\n\n"
+        "Please send it like *2 jollof rice with chicken* or *1 fried rice with beef*.\n\n"
+        f"Or browse everything with photos here:\n{settings.menu_web_app_url}"
+    )
+
+
 async def _handle_order_input(sender: str, text: str, settings) -> str:
     """Customer is telling us what they want via chat."""
-    items = await parse_order_from_text(text)
+    interp = await interpret_order_message(text)
+    return await _apply_order_interpretation(sender, interp, settings)
 
-    if not items:
+
+async def _handle_order_clarification(sender: str, text: str, settings) -> str:
+    """User is picking between options or sending a quantity."""
+    clar = store.get_order_clarification(sender) or {}
+    phase = clar.get("phase")
+
+    if phase == "pick_variant":
+        candidates = clar.get("candidates") or []
+        picked = match_candidate_selection(text, candidates)
+        if not picked:
+            return (
+                "Please reply with the *number* next to the dish, "
+                "or say the name like *chicken* or *beef*.\n\n"
+                f"Full menu: {settings.menu_web_app_url}"
+            )
+        qty = extract_quantity(text)
+        if qty is not None:
+            line = make_order_line(picked, qty)
+            store.set_order_clarification(sender, None)
+            store.set_pending_items(sender, [line])
+            store.set_state(sender, "confirming_order")
+            return format_order_for_confirmation([line], settings.restaurant_name)
+        price = float(picked.get("price", 0))
+        store.set_order_clarification(sender, {"phase": "quantity", "item": picked})
         return (
-            "Hmm, I couldn't quite catch that. 😅\n\n"
-            "Try something like: *'2 jollof rice with chicken and a sobolo'*\n\n"
-            f"Or browse our full menu here: {settings.menu_web_app_url}"
+            f"Okay, *{picked['name']}* is *GHS {price:.2f}*.\n\n"
+            "How many would you like? Please send a number, for example *2*."
         )
 
-    store.set_pending_items(sender, items)
-    store.set_state(sender, "confirming_order")
-    return format_order_for_confirmation(items, settings.restaurant_name)
+    if phase == "quantity":
+        item = clar.get("item")
+        if not item:
+            store.set_order_clarification(sender, None)
+            store.set_state(sender, "taking_order")
+            return "What would you like to order? 😊"
+        qty = extract_quantity(text)
+        if qty is None:
+            return "Please send the quantity as a number, for example *2* or *3*."
+        line = make_order_line(item, qty)
+        store.set_order_clarification(sender, None)
+        store.set_pending_items(sender, [line])
+        store.set_state(sender, "confirming_order")
+        return format_order_for_confirmation([line], settings.restaurant_name)
+
+    store.set_order_clarification(sender, None)
+    store.set_state(sender, "taking_order")
+    return await _handle_order_input(sender, text, settings)
 
 
 async def _handle_order_confirmation(sender: str, text_lower: str, settings) -> str:
@@ -213,12 +355,12 @@ async def _handle_order_confirmation(sender: str, text_lower: str, settings) -> 
     if any(word in text_lower for word in no_signals):
         store.set_state(sender, "taking_order")
         store.set_pending_items(sender, [])
+        store.set_order_clarification(sender, None)
         return (
             "No problem! Let's start again. 😊\n\n"
             "What would you like to order?"
         )
 
-    # Ambiguous — treat as freeform but nudge
     return "Reply *Yes* to confirm your order, or *No* to change it. 😊"
 
 
@@ -256,7 +398,6 @@ async def _handle_payment_input(sender: str, text_lower: str, settings) -> str:
 
     store.set_payment_method(sender, payment)
 
-    # Place the order
     try:
         order = await _finalise_order(sender, payment, settings)
         store.set_state(sender, "done")
@@ -271,7 +412,6 @@ async def _handle_payment_input(sender: str, text_lower: str, settings) -> str:
             f"Questions? Just reply here anytime!"
         )
 
-        # Reset session for next time
         store.clear_session(sender)
         return reply
 
@@ -301,7 +441,7 @@ async def _finalise_order(sender: str, payment: str, settings):
         for item in items_raw
     ]
 
-    total = sum(i.total_price for i in order_items)
+    total = sum(item.total_price for item in order_items)
 
     data = CreateOrderSchema(
         customer_phone=sender,
@@ -313,10 +453,7 @@ async def _finalise_order(sender: str, payment: str, settings):
     )
 
     order = await create_order(data)
-
-    # Update customer record
     await upsert_customer(sender, customer_name)
-
     return order
 
 
@@ -326,7 +463,6 @@ async def _handle_freeform(sender: str, text: str, settings) -> str:
     reply = await _ai_freeform(sender, text, settings)
     store.add_message(sender, "assistant", reply)
 
-    # If they're saying they want to order, nudge them
     order_signals = ["order", "buy", "want", "hungry", "food", "eat"]
     if any(word in text.lower() for word in order_signals):
         store.set_state(sender, "asked_intent")

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers import orders, webhook, menu
 import logging
+import os
 
 logging.basicConfig(
     level=logging.INFO,
@@ -10,6 +11,7 @@ logging.basicConfig(
 )
 
 settings = get_settings()
+deploy_sha = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "unknown"
 
 app = FastAPI(
     title="WhatsApp Food Ordering API",
@@ -31,6 +33,11 @@ app.include_router(orders.router)
 app.include_router(webhook.router)
 app.include_router(menu.router)
 
+logging.getLogger(__name__).info(
+    "Starting API build commit=%s whatsapp_sender=text",
+    deploy_sha[:7] if deploy_sha != "unknown" else deploy_sha,
+)
+
 
 @app.get("/")
 async def root():
@@ -38,6 +45,8 @@ async def root():
         "service": "WhatsApp Food Ordering API",
         "status": "running",
         "version": "1.0.0",
+        "commit": deploy_sha,
+        "whatsapp_sender": "text",
         "by": "Veloxa Technology Ltd",
     }
 

@@ -20,6 +20,7 @@ ConversationState = Literal[
     "greeting",           # Just started
     "asked_intent",       # Asked "know what you want?"
     "taking_order",       # Customer is telling us what they want
+    "clarifying_order",   # Picking between menu options or sending quantity
     "confirming_order",   # Showed order summary, waiting for yes/no
     "collecting_address", # Order confirmed, need delivery address
     "collecting_payment", # Have address, need payment method
@@ -37,6 +38,7 @@ class Session(TypedDict):
     state: ConversationState
     branch_id: str | None
     pending_items: list[dict]   # Parsed order items awaiting confirmation
+    order_clarification: dict | None  # pick_variant / quantity follow-up
     delivery_address: str | None
     payment_method: str | None  # "momo" | "cash"
     customer_name: str | None
@@ -57,6 +59,7 @@ def _empty_session() -> Session:
         "state": "greeting",
         "branch_id": None,
         "pending_items": [],
+        "order_clarification": None,
         "delivery_address": None,
         "payment_method": None,
         "customer_name": None,
@@ -89,6 +92,14 @@ def set_pending_items(phone: str, items: list[dict]) -> None:
 
 def get_pending_items(phone: str) -> list[dict]:
     return get_session(phone).get("pending_items", [])
+
+
+def set_order_clarification(phone: str, data: dict | None) -> None:
+    get_session(phone)["order_clarification"] = data
+
+
+def get_order_clarification(phone: str) -> dict | None:
+    return get_session(phone).get("order_clarification")
 
 
 def set_branch_id(phone: str, branch_id: str) -> None:
