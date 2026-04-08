@@ -12,9 +12,11 @@ For multi-instance production: swap _store for Redis.
 Max 30 messages per session to keep AI context lean.
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import TypedDict, Literal
 
 MAX_HISTORY = 30
+MESSAGE_DEDUP_TTL_MINUTES = 10
 
 ConversationState = Literal[
     "greeting",           # Just started
@@ -45,6 +47,7 @@ class Session(TypedDict):
 
 
 _store: dict[str, Session] = {}
+_processed_message_ids: dict[str, datetime] = {}
 
 
 def get_session(phone: str) -> Session:
@@ -137,3 +140,26 @@ def get_customer_name(phone: str) -> str | None:
 def clear_session(phone: str) -> None:
     """Reset after order is placed or conversation abandoned."""
     _store[phone] = _empty_session()
+
+
+def has_processed_message(message_id: str) -> bool:
+    """Return True if this WhatsApp message id was processed recently."""
+    _prune_processed_message_ids()
+    return message_id in _processed_message_ids
+
+
+def mark_message_processed(message_id: str) -> None:
+    """Remember a WhatsApp message id to avoid duplicate replies."""
+    _prune_processed_message_ids()
+    _processed_message_ids[message_id] = datetime.now(timezone.utc)
+
+
+def _prune_processed_message_ids() -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=MESSAGE_DEDUP_TTL_MINUTES)
+    stale_ids = [
+        message_id
+        for message_id, seen_at in _processed_message_ids.items()
+        if seen_at < cutoff
+    ]
+    for message_id in stale_ids:
+        _processed_message_ids.pop(message_id, None)

@@ -28,6 +28,7 @@ from app.services.order_parser import (
 from app.services.customer_service import (
     get_customer,
     get_last_order,
+    get_latest_order_status,
     upsert_customer,
     format_returning_customer_greeting,
 )
@@ -104,6 +105,10 @@ PAUSE_SIGNALS = [
     "just looking", "nothing now", "no thanks", "no thank you", "that will be all",
     "that's all", "thats all", "i'm okay", "im okay", "i am okay",
 ]
+STATUS_SIGNALS = [
+    "status of my order", "what's the status", "whats the status", "order status",
+    "where is my order", "track my order", "how far is my order", "is my order ready",
+]
 
 
 async def handle_incoming_message(sender: str, text: str, branch_id: str | None = None) -> str:
@@ -119,6 +124,9 @@ async def handle_incoming_message(sender: str, text: str, branch_id: str | None 
         store.set_branch_id(sender, branch_id)
 
     text_lower = text.lower().strip()
+
+    if _is_order_status_request(text_lower):
+        return await _handle_order_status_request(sender)
 
     if state == "greeting":
         return await _handle_greeting(sender, text, settings)
@@ -173,6 +181,12 @@ def _is_pause_message(text_lower: str) -> bool:
     return any(signal in text_lower for signal in PAUSE_SIGNALS)
 
 
+def _is_order_status_request(text_lower: str) -> bool:
+    if any(signal in text_lower for signal in STATUS_SIGNALS):
+        return True
+    return "order" in text_lower and "status" in text_lower
+
+
 async def _try_interpret_order(sender: str, text: str, settings) -> str | None:
     if not _looks_like_order_request(text.lower().strip()):
         return None
@@ -201,6 +215,33 @@ async def _handle_ordering_side_message(sender: str, text: str, settings) -> str
         return await _handle_freeform(sender, text, settings)
 
     return None
+
+
+async def _handle_order_status_request(sender: str) -> str:
+    latest_order = await get_latest_order_status(sender)
+    if not latest_order:
+        return (
+            "I can’t see any recent order on this WhatsApp number yet.\n\n"
+            "If you placed it from the web app, make sure you used this same number at checkout."
+        )
+
+    status_value = str(latest_order.get("status", "pending")).lower()
+    order_id = str(latest_order.get("id", ""))[:8].upper()
+
+    labels = {
+        "pending": "pending",
+        "confirmed": "confirmed",
+        "preparing": "being prepared",
+        "ready": "ready",
+        "delivered": "delivered",
+        "cancelled": "cancelled",
+    }
+    status_label = labels.get(status_value, status_value)
+
+    return (
+        f"Your latest order *#{order_id}* is currently *{status_label}*.\n\n"
+        "If you want, I can also help you place another order."
+    )
 
 
 async def _handle_greeting(sender: str, text: str, settings) -> str:

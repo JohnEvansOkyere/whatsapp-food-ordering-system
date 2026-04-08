@@ -59,8 +59,13 @@ async def receive_message(request: Request):
             return {"status": "no_message"}
 
         message = changes["messages"][0]
+        message_id: str = message.get("id", "")
         sender: str = message["from"]
         msg_type: str = message.get("type", "")
+
+        if message_id and store.has_processed_message(message_id):
+            logger.info("Ignoring duplicate WhatsApp message id=%s from %s", message_id, sender)
+            return {"status": "duplicate_ignored"}
 
         # Extract branch_id from QR referral payload (Meta sends this
         # when customer scans a wa.me link with ?ref=branch_XXXXX)
@@ -80,6 +85,8 @@ async def receive_message(request: Request):
 
             reply = await handle_incoming_message(sender, text, branch_id)
             await send_text_message(sender, reply)
+            if message_id:
+                store.mark_message_processed(message_id)
 
         # Handle image/audio/video — politely decline for now
         elif msg_type in ("image", "audio", "video", "document"):
@@ -88,6 +95,8 @@ async def receive_message(request: Request):
                 "Hi! I can only read text messages right now. "
                 "Type *Hi* to start ordering. 😊"
             )
+            if message_id:
+                store.mark_message_processed(message_id)
 
         # Ignore other types silently
         else:

@@ -58,6 +58,29 @@ async def get_last_order(phone: str) -> dict | None:
         return None
 
 
+async def get_latest_order_status(phone: str) -> dict | None:
+    """
+    Fetch the customer's most recent order with status from Supabase.
+    Used for WhatsApp order tracking requests.
+    """
+    try:
+        supabase = get_supabase()
+        result = (
+            supabase.table("orders")
+            .select("id, status, total_amount, created_at")
+            .eq("customer_phone", phone)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Latest order status lookup failed for {phone}: {e}")
+        return None
+
+
 async def upsert_customer(phone: str, name: str | None = None) -> None:
     """
     Create or update a customer record.
