@@ -52,6 +52,8 @@ You help customers order food. The ordering flow is handled by the system —
 your job in freeform conversation is to:
 - Answer questions about the restaurant (hours, location, delivery areas)
 - Help undecided customers pick something
+- If a customer says they are hungry, suggest 2 or 3 real menu items naturally
+- If a customer says thank you, no thanks, or not now, reply warmly like a human rep
 - Handle small talk warmly and redirect to ordering
 - If a customer seems confused, offer the menu link: {menu_url}
 - If a customer asks what is available, mention only real menu items or send the menu link
@@ -95,6 +97,12 @@ ORDER_HINTS = [
 ORDER_INTENT_SIGNALS = [
     "i want", "i'll have", "give me", "order", "get me", "i need",
     "can i get", "let me get", "send me",
+]
+THANKS_SIGNALS = ["thank you", "thanks", "thank u", "thx", "okay thanks", "alright thanks"]
+PAUSE_SIGNALS = [
+    "not now", "don't need", "dont need", "maybe later", "later", "just browsing",
+    "just looking", "nothing now", "no thanks", "no thank you", "that will be all",
+    "that's all", "thats all", "i'm okay", "im okay", "i am okay",
 ]
 
 
@@ -157,12 +165,41 @@ def _looks_like_order_request(text_lower: str) -> bool:
     return any(hint in text_lower for hint in ORDER_HINTS)
 
 
+def _is_thanks_message(text_lower: str) -> bool:
+    return any(signal in text_lower for signal in THANKS_SIGNALS)
+
+
+def _is_pause_message(text_lower: str) -> bool:
+    return any(signal in text_lower for signal in PAUSE_SIGNALS)
+
+
 async def _try_interpret_order(sender: str, text: str, settings) -> str | None:
     if not _looks_like_order_request(text.lower().strip()):
         return None
     interp = await interpret_order_message(text)
     if interp["kind"] in ("ready", "need_pick", "need_quantity"):
         return await _apply_order_interpretation(sender, interp, settings)
+    return None
+
+
+def _close_out_chat(sender: str) -> None:
+    store.clear_session(sender)
+
+
+async def _handle_ordering_side_message(sender: str, text: str, settings) -> str | None:
+    text_lower = text.lower().strip()
+
+    if _is_thanks_message(text_lower):
+        store.set_state(sender, "asked_intent")
+        return "You’re welcome. If you need anything else, just send me a message."
+
+    if _is_pause_message(text_lower):
+        _close_out_chat(sender)
+        return "No problem at all. If you need anything later, just message me here."
+
+    if not _looks_like_order_request(text_lower):
+        return await _handle_freeform(sender, text, settings)
+
     return None
 
 
@@ -287,12 +324,21 @@ async def _apply_order_interpretation(sender, interp, settings) -> str:
 
 async def _handle_order_input(sender: str, text: str, settings) -> str:
     """Customer is telling us what they want via chat."""
+    side_reply = await _handle_ordering_side_message(sender, text, settings)
+    if side_reply:
+        return side_reply
+
     interp = await interpret_order_message(text)
     return await _apply_order_interpretation(sender, interp, settings)
 
 
 async def _handle_order_clarification(sender: str, text: str, settings) -> str:
     """User is picking between options or sending a quantity."""
+    side_reply = await _handle_ordering_side_message(sender, text, settings)
+    if side_reply:
+        store.set_order_clarification(sender, None)
+        return side_reply
+
     clar = store.get_order_clarification(sender) or {}
     phase = clar.get("phase")
 
