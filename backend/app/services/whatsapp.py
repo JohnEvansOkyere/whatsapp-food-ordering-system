@@ -43,6 +43,54 @@ async def send_text_message(to: str, body: str) -> bool:
             return False
 
 
+async def send_template_message(
+    to: str,
+    template_name: str,
+    language: str,
+    body_params: list[str],
+) -> bool:
+    """Send a WhatsApp template message."""
+    settings = get_settings()
+    url = f"{GRAPH_API}/{settings.meta_phone_number_id}/messages"
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": text}
+                        for text in body_params
+                    ],
+                }
+            ],
+        },
+    }
+
+    headers = {
+        "Authorization": f"Bearer {settings.meta_access_token}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPStatusError as e:
+            logger.error(f"WhatsApp template send failed to {to}: {e}")
+            logger.error(f"Response body: {e.response.text}")
+            return False
+        except httpx.HTTPError as e:
+            logger.error(f"WhatsApp HTTP error to {to}: {e}")
+            return False
+
+
 def _build_receipt(order: OrderResponseSchema, restaurant_name: str) -> str:
     """Build a full POS-style receipt for the customer."""
     from datetime import datetime, timezone
@@ -119,9 +167,41 @@ def _build_owner_notification(order: OrderResponseSchema, restaurant_name: str) 
     )
 
 
+def _build_order_items_template_text(order: OrderResponseSchema) -> str:
+    """Convert order items into a single template body string."""
+    return "\n".join(
+        [f"- {item.quantity}x {item.name} = GHS {item.total_price:.2f}" for item in order.items]
+    )
+
+
 async def send_order_receipt_to_customer(order: OrderResponseSchema) -> bool:
-    """Send the full POS receipt to the customer's WhatsApp."""
+    """Send the order receipt to the customer's WhatsApp using a template."""
     settings = get_settings()
+    template_name = "order_receipt"
+    language = "en_US"
+    body_params = [
+        order.customer_name or "Customer",
+        order.id[:8].upper(),
+        order.created_at.strftime("%d %b %Y, %I:%M %p"),
+        _build_order_items_template_text(order),
+        f"{order.total_amount:.2f}",
+        f"{order.total_amount:.2f}",
+        order.delivery_address,
+        "MoMo" if order.payment_method == "momo" else "Cash on Delivery",
+        settings.restaurant_name,
+    ]
+
+    sent = await send_template_message(
+        order.customer_phone,
+        template_name,
+        language,
+        body_params,
+    )
+
+    if sent:
+        return True
+
+    # Fallback to plain text if template send fails for any reason.
     receipt = _build_receipt(order, settings.restaurant_name)
     return await send_text_message(order.customer_phone, receipt)
 
