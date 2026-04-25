@@ -30,10 +30,10 @@ from app.services.customer_service import (
     get_customer,
     get_last_order,
     get_latest_order_status,
-    upsert_customer,
     format_returning_customer_greeting,
 )
 from app.services.order_service import create_order
+from app.services.order_service import get_status_label
 from app.schemas.order import CreateOrderSchema, OrderItemSchema
 
 logger = logging.getLogger(__name__)
@@ -232,23 +232,21 @@ async def _handle_order_status_request(sender: str) -> str:
             f"If you still need help, please reach customer support on {settings.customer_support_whatsapp}."
         )
 
-    status_value = str(latest_order.get("status", "pending")).lower()
+    status_value = str(latest_order.get("status", "new")).lower()
     order_id = str(latest_order.get("id", ""))[:8].upper()
+    tracking_code = latest_order.get("tracking_code")
+    status_label = get_status_label(status_value).lower()
 
-    labels = {
-        "pending": "pending",
-        "confirmed": "confirmed",
-        "preparing": "being prepared",
-        "ready": "ready",
-        "delivered": "delivered",
-        "cancelled": "cancelled",
-    }
-    status_label = labels.get(status_value, status_value)
-
-    return (
+    reply = (
         f"Your latest order *#{order_id}* is currently *{status_label}*.\n\n"
         "If you want, I can also help you place another order."
     )
+    if tracking_code:
+        reply = (
+            f"{reply}\n\n"
+            f"Tracking code: *{tracking_code}*"
+        )
+    return reply
 
 
 async def _handle_greeting(sender: str, text: str, settings) -> str:
@@ -499,7 +497,8 @@ async def _handle_payment_input(sender: str, text_lower: str, settings) -> str:
         payment_label = "Mobile Money" if payment == "momo" else "Cash on Delivery"
         reply = (
             f"✅ *Order placed successfully!*\n\n"
-            f"Order #{order.id[:8].upper()}\n"
+            f"Order #{(order.order_number or order.id[:8].upper())}\n"
+            f"Tracking: {order.tracking_code or 'N/A'}\n"
             f"Payment: {payment_label}\n\n"
             f"Your full receipt is coming right now 🧾\n"
             f"We'll deliver within 45–60 minutes. 🛵\n\n"
@@ -547,7 +546,6 @@ async def _finalise_order(sender: str, payment: str, settings):
     )
 
     order = await create_order(data)
-    await upsert_customer(sender, customer_name)
     return order
 
 

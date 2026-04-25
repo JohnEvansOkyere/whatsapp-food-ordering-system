@@ -47,7 +47,7 @@ export default function MenuPage() {
     async function loadMenu() {
       try {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-        const res = await fetch(`${apiUrl}/menu/`)
+        const res = await fetch(`${apiUrl}/public/menu`)
         if (!res.ok) {
           throw new Error(`Menu request failed with status ${res.status}`)
         }

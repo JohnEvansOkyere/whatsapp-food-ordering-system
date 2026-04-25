@@ -1,50 +1,51 @@
 """
-WhatsApp Webhook Router.
+WhatsApp webhook routes.
 
-GET  /webhook/whatsapp  — Meta verification handshake
-POST /webhook/whatsapp  — Incoming customer messages
-
-QR codes carry branch_id as a query param in the wa.me link.
-When customer scans and sends first message, we extract it from
-the referral payload Meta sends.
-
-Always returns 200 to Meta — non-200 causes Meta to retry endlessly.
+Both `/webhook/*` and `/webhooks/*` remain available during the route-family
+cutover so existing provider configuration does not break.
 """
 
 import logging
-from fastapi import APIRouter, Request, HTTPException, Query
+
+from fastapi import APIRouter, HTTPException, Query, Request
+
 from app.config import get_settings
+from app.services import session_store as store
 from app.services.groq_service import handle_incoming_message
 from app.services.whatsapp import send_text_message
-from app.services import session_store as store
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/webhook", tags=["webhook"])
+router = APIRouter(tags=["webhooks"])
 
 
-@router.get("/whatsapp")
-async def verify_webhook(
-    hub_mode: str = Query(None, alias="hub.mode"),
-    hub_challenge: str = Query(None, alias="hub.challenge"),
-    hub_verify_token: str = Query(None, alias="hub.verify_token"),
+async def _verify_whatsapp_webhook(
+    hub_mode: str | None,
+    hub_challenge: str | None,
+    hub_verify_token: str | None,
 ):
-    """Meta webhook verification — called once on setup."""
     settings = get_settings()
 
     if hub_mode == "subscribe" and hub_verify_token == settings.meta_verify_token:
         logger.info("WhatsApp webhook verified")
         return int(hub_challenge)
 
-    logger.warning("Webhook verification failed — token mismatch")
+    logger.warning("Webhook verification failed - token mismatch")
     raise HTTPException(status_code=403, detail="Verification token mismatch")
 
 
-@router.post("/whatsapp")
+@router.get("/webhook/whatsapp")
+@router.get("/webhooks/whatsapp")
+async def verify_webhook(
+    hub_mode: str = Query(None, alias="hub.mode"),
+    hub_challenge: str = Query(None, alias="hub.challenge"),
+    hub_verify_token: str = Query(None, alias="hub.verify_token"),
+):
+    return await _verify_whatsapp_webhook(hub_mode, hub_challenge, hub_verify_token)
+
+
+@router.post("/webhook/whatsapp")
+@router.post("/webhooks/whatsapp")
 async def receive_message(request: Request):
-    """
-    Receive and process incoming WhatsApp messages.
-    Extracts sender, message text, and optional branch_id from QR referral.
-    """
     try:
         body = await request.json()
     except Exception:
@@ -54,7 +55,6 @@ async def receive_message(request: Request):
         entry = body["entry"][0]
         changes = entry["changes"][0]["value"]
 
-        # Ignore delivery receipts and read notifications
         if "messages" not in changes:
             return {"status": "no_message"}
 
@@ -67,8 +67,6 @@ async def receive_message(request: Request):
             logger.info("Ignoring duplicate WhatsApp message id=%s from %s", message_id, sender)
             return {"status": "duplicate_ignored"}
 
-        # Extract branch_id from QR referral payload (Meta sends this
-        # when customer scans a wa.me link with ?ref=branch_XXXXX)
         branch_id: str | None = None
         referral = message.get("referral", {})
         if referral:
@@ -77,7 +75,6 @@ async def receive_message(request: Request):
                 branch_id = ref_source.replace("branch_", "")
                 store.set_branch_id(sender, branch_id)
 
-        # Handle text messages
         if msg_type == "text":
             text: str = message["text"]["body"].strip()
             if not text:
@@ -87,25 +84,18 @@ async def receive_message(request: Request):
             await send_text_message(sender, reply)
             if message_id:
                 store.mark_message_processed(message_id)
-
-        # Handle image/audio/video — politely decline for now
         elif msg_type in ("image", "audio", "video", "document"):
             await send_text_message(
                 sender,
-                "Hi! I can only read text messages right now. "
-                "Type *Hi* to start ordering. 😊"
+                "Hi! I can only read text messages right now. Type *Hi* to start ordering.",
             )
             if message_id:
                 store.mark_message_processed(message_id)
-
-        # Ignore other types silently
         else:
-            logger.debug(f"Ignored message type '{msg_type}' from {sender}")
+            logger.debug("Ignored message type '%s' from %s", msg_type, sender)
+    except (KeyError, IndexError) as exc:
+        logger.warning("Webhook payload parse warning: %s", exc)
+    except Exception as exc:
+        logger.error("Webhook handler error: %s", exc, exc_info=True)
 
-    except (KeyError, IndexError) as e:
-        logger.warning(f"Webhook payload parse warning: {e}")
-    except Exception as e:
-        logger.error(f"Webhook handler error: {e}", exc_info=True)
-
-    # Always 200 — Meta will retry on anything else
     return {"status": "ok"}

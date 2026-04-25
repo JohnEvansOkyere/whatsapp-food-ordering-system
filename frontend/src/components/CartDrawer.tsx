@@ -37,6 +37,7 @@ export default function CartDrawer({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [orderId, setOrderId] = useState('')
+  const [trackingCode, setTrackingCode] = useState('')
   const [form, setForm] = useState<CheckoutForm>({
     phone: '',
     name: '',
@@ -91,7 +92,7 @@ export default function CartDrawer({
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      const res = await fetch(`${apiUrl}/orders/`, {
+      const res = await fetch(`${apiUrl}/public/orders`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -103,7 +104,8 @@ export default function CartDrawer({
       }
 
       const data = await res.json()
-      setOrderId(data.id?.slice(0, 8).toUpperCase() || 'N/A')
+      setOrderId(data.order_number || data.id?.slice(0, 8).toUpperCase() || 'N/A')
+      setTrackingCode(data.tracking_code || '')
       setStep('success')
       onClear()
 
@@ -119,6 +121,7 @@ export default function CartDrawer({
     if (step === 'success') {
       setStep('cart')
       setOrderId('')
+      setTrackingCode('')
       setForm({ phone: '', name: '', address: '', payment: 'momo' })
     }
     onClose()
@@ -349,8 +352,16 @@ export default function CartDrawer({
                 Your receipt has been sent to your WhatsApp. We'll deliver within 45–60 minutes.
               </p>
               <div className="bg-orange-50 rounded-2xl p-4 mb-6 inline-block">
-                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Order ID</p>
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Order Number</p>
                 <p className="font-black text-2xl text-brand-orange">#{orderId}</p>
+                {trackingCode && (
+                  <>
+                    <p className="text-xs text-gray-500 uppercase tracking-wide mt-4 mb-1">
+                      Tracking Code
+                    </p>
+                    <p className="font-black text-lg text-brand-dark">{trackingCode}</p>
+                  </>
+                )}
               </div>
               <button
                 onClick={handleClose}
