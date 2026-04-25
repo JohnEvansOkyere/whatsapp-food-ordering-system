@@ -117,6 +117,23 @@ class FakeSupabase:
         return FakeQuery(self, table_name)
 
 
+class LegacyCompatQuery(FakeQuery):
+    def execute(self):
+        if (
+            self.table_name == "orders"
+            and self.insert_payload is not None
+            and isinstance(self.insert_payload, dict)
+            and "channel" in self.insert_payload
+        ):
+            raise Exception("Could not find the 'channel' column of 'orders' in the schema cache")
+        return super().execute()
+
+
+class LegacyCompatSupabase(FakeSupabase):
+    def table(self, table_name):
+        return LegacyCompatQuery(self, table_name)
+
+
 def api_request(app, method, url, **kwargs):
     async def _request():
         transport = httpx.ASGITransport(app=app)
@@ -274,3 +291,45 @@ def test_admin_order_flow_validates_transitions_and_tracking(app, fake_backend):
         "cancelled",
     ]
     assert fake_backend.tables["order_events"][-1]["reason_code"] == "customer_changed_mind"
+
+
+def test_public_order_creation_falls_back_for_legacy_orders_schema(app, monkeypatch):
+    fake_supabase = LegacyCompatSupabase()
+
+    async def fake_fetch_menu_items():
+        return copy.deepcopy(SAMPLE_MENU)
+
+    async def fake_send_message(_order):
+        return True
+
+    monkeypatch.setattr(order_service, "get_supabase", lambda: fake_supabase)
+    monkeypatch.setattr(customer_service, "get_supabase", lambda: fake_supabase)
+    monkeypatch.setattr(order_service, "fetch_menu_items", fake_fetch_menu_items)
+    monkeypatch.setattr(order_service, "send_order_receipt_to_customer", fake_send_message)
+    monkeypatch.setattr(order_service, "send_order_notification_to_owner", fake_send_message)
+
+    response = api_request(
+        app,
+        "POST",
+        "/public/orders",
+        json={
+            "customer_phone": "233500000111",
+            "customer_name": "Legacy Customer",
+            "delivery_address": "Tema Community 9",
+            "items": [{"item_id": "sobolo", "quantity": 2}],
+            "payment_method": "cash",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+
+    assert body["status"] == "new"
+    assert body["channel"] == "web"
+    assert body["tracking_code"] is None
+    assert body["order_number"] is None
+    assert len(fake_supabase.tables["orders"]) == 1
+    assert fake_supabase.tables["orders"][0]["status"] == "pending"
+    assert fake_supabase.tables["orders"][0]["items"][0]["name"] == "Sobolo (Zobo)"
+    assert fake_supabase.tables["order_items"] == []
+    assert fake_supabase.tables["order_events"] == []

@@ -74,6 +74,19 @@ STATUS_EVENT_TYPES: dict[str, str] = {
 }
 
 
+def _is_schema_compatibility_error(exc: Exception) -> bool:
+    message = str(exc)
+    markers = [
+        "schema cache",
+        "Could not find the",
+        "column of 'orders'",
+        "column of 'order_items'",
+        "column of 'order_events'",
+        "column of 'customers'",
+    ]
+    return any(marker in message for marker in markers)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -337,20 +350,46 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
     if data.branch_id:
         order_row["branch_id"] = data.branch_id
 
-    result = supabase.table("orders").insert(order_row).execute()
-    if not result.data:
-        raise RuntimeError("Failed to insert order into Supabase")
+    compatibility_mode = False
+    try:
+        result = supabase.table("orders").insert(order_row).execute()
+        if not result.data:
+            raise RuntimeError("Failed to insert order into Supabase")
+        inserted_row = result.data[0]
+    except Exception as exc:
+        if not _is_schema_compatibility_error(exc):
+            raise
 
-    inserted_row = result.data[0]
+        compatibility_mode = True
+        logger.warning(
+            "Falling back to legacy order insert because the database schema is behind the app code: %s",
+            exc,
+        )
+        legacy_row = {
+            "id": order_id,
+            "customer_phone": data.customer_phone,
+            "customer_name": data.customer_name,
+            "delivery_address": data.delivery_address,
+            "items": _build_legacy_items(resolved_items),
+            "total_amount": subtotal,
+            "payment_method": data.payment_method.value,
+            "status": OrderStatus.pending.value,
+            "notes": data.notes,
+            "created_at": now,
+        }
+        legacy_result = supabase.table("orders").insert(legacy_row).execute()
+        if not legacy_result.data:
+            raise RuntimeError("Failed to insert legacy order into Supabase")
+        inserted_row = legacy_result.data[0]
 
     try:
         customer = await upsert_customer(
             phone=data.customer_phone,
             name=data.customer_name,
-            tenant_id=inserted_row.get("tenant_id"),
-            default_branch_id=inserted_row.get("branch_id"),
+            tenant_id=None if compatibility_mode else inserted_row.get("tenant_id"),
+            default_branch_id=None if compatibility_mode else inserted_row.get("branch_id"),
         )
-        if customer and customer.get("id"):
+        if customer and customer.get("id") and not compatibility_mode:
             update_result = (
                 supabase.table("orders")
                 .update({"customer_id": customer["id"]})
@@ -364,32 +403,47 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
     except Exception as exc:
         logger.error("Customer upsert failed for order %s: %s", order_id, exc)
 
-    normalized_items = [
-        {
-            "tenant_id": inserted_row.get("tenant_id"),
-            "branch_id": inserted_row.get("branch_id"),
-            "order_id": order_id,
-            "menu_item_id": item.item_id,
-            "item_name_snapshot": item.name,
-            "unit_price": item.unit_price,
-            "quantity": item.quantity,
-            "line_total": item.total_price,
-            "created_at": now,
-        }
-        for item in resolved_items
-    ]
-    if normalized_items:
-        supabase.table("order_items").insert(normalized_items).execute()
+    if not compatibility_mode:
+        normalized_items = [
+            {
+                "tenant_id": inserted_row.get("tenant_id"),
+                "branch_id": inserted_row.get("branch_id"),
+                "order_id": order_id,
+                "menu_item_id": item.item_id,
+                "item_name_snapshot": item.name,
+                "unit_price": item.unit_price,
+                "quantity": item.quantity,
+                "line_total": item.total_price,
+                "created_at": now,
+            }
+            for item in resolved_items
+        ]
+        if normalized_items:
+            try:
+                supabase.table("order_items").insert(normalized_items).execute()
+            except Exception as exc:
+                if _is_schema_compatibility_error(exc):
+                    logger.warning("Skipping normalized order_items insert for legacy schema: %s", exc)
+                    compatibility_mode = True
+                else:
+                    raise
 
-    await _create_order_event(
-        order_row=inserted_row,
-        event_type=STATUS_EVENT_TYPES[OrderStatus.new.value],
-        from_status=None,
-        to_status=OrderStatus.new.value,
-        actor_type="customer",
-        actor_label=data.channel,
-        metadata_json={"source": data.channel},
-    )
+    if not compatibility_mode:
+        try:
+            await _create_order_event(
+                order_row=inserted_row,
+                event_type=STATUS_EVENT_TYPES[OrderStatus.new.value],
+                from_status=None,
+                to_status=OrderStatus.new.value,
+                actor_type="customer",
+                actor_label=data.channel,
+                metadata_json={"source": data.channel},
+            )
+        except Exception as exc:
+            if _is_schema_compatibility_error(exc):
+                logger.warning("Skipping order event insert for legacy schema: %s", exc)
+            else:
+                raise
 
     order = _build_order_response(inserted_row, resolved_items)
 
