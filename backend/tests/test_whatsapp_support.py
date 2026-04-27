@@ -93,6 +93,42 @@ def test_reference_message_still_resolves_status_if_support_state_is_missing(mon
     assert "TRK-8A8E1807" in reply
 
 
+def test_support_reference_state_exits_cleanly_on_thanks(monkeypatch):
+    async def fake_latest(_sender: str):
+        return None
+
+    monkeypatch.setattr(groq_service, "get_latest_order_status", fake_latest)
+
+    sender = "233244123460"
+    first_reply = run(groq_service.handle_incoming_message(sender, "What's the status of my order?"))
+
+    assert "Please send your *order number* or *tracking code*" in first_reply
+    assert store.get_state(sender) == "awaiting_support_reference"
+
+    second_reply = run(groq_service.handle_incoming_message(sender, "Okay thank you"))
+
+    assert "If you get the order number or tracking code later" in second_reply
+    assert store.get_state(sender) == "asked_intent"
+
+
+def test_support_reference_state_exits_cleanly_on_pause(monkeypatch):
+    async def fake_latest(_sender: str):
+        return None
+
+    monkeypatch.setattr(groq_service, "get_latest_order_status", fake_latest)
+
+    sender = "233244123461"
+    first_reply = run(groq_service.handle_incoming_message(sender, "What's the status of my order?"))
+
+    assert "Please send your *order number* or *tracking code*" in first_reply
+    assert store.get_state(sender) == "awaiting_support_reference"
+
+    second_reply = run(groq_service.handle_incoming_message(sender, "I don't have it so later"))
+
+    assert "Whenever you get the order number or tracking code" in second_reply
+    assert store.get_state(sender) == "greeting"
+
+
 def test_cancel_flow_requests_reference_and_confirms(monkeypatch):
     async def fake_lookup(reference: str):
         assert reference == "TRK-DEMO1001"

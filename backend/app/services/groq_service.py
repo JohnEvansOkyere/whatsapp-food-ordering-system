@@ -366,8 +366,25 @@ async def _handle_support_intent(sender: str, text: str, settings, *, action: st
 async def _handle_support_reference(sender: str, text: str, settings) -> str:
     support_request = store.get_support_request(sender) or {}
     action = str(support_request.get("action") or "status")
+    text_lower = text.lower().strip()
 
-    if text.lower().strip() in {"latest", "my latest order", "recent"} and action == "status":
+    if _is_thanks_message(text_lower):
+        store.set_support_request(sender, None)
+        store.set_state(sender, "asked_intent")
+        return (
+            "You’re welcome. If you get the order number or tracking code later, "
+            "just send it here and I’ll check it for you."
+        )
+
+    if _is_pause_message(text_lower):
+        store.set_support_request(sender, None)
+        _close_out_chat(sender)
+        return (
+            "No problem. Whenever you get the order number or tracking code, "
+            "just message me here and I’ll check it for you."
+        )
+
+    if text_lower in {"latest", "my latest order", "recent"} and action == "status":
         latest_order = await get_latest_order_status(sender)
         if latest_order:
             store.set_support_request(sender, None)
