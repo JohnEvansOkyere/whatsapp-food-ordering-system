@@ -45,6 +45,54 @@ def test_status_flow_requests_reference_then_returns_deterministic_status(monkey
     assert store.get_state(sender) == "asked_intent"
 
 
+def test_status_of_food_phrase_uses_support_flow(monkeypatch):
+    async def fake_lookup(reference: str):
+        assert reference == "8A8E1807"
+        return SimpleNamespace(
+            id="8a8e1807-order",
+            order_number="ORD-8A8E1807",
+            tracking_code="TRK-8A8E1807",
+            status=OrderStatus.out_for_delivery,
+            total_amount=52.0,
+        )
+
+    monkeypatch.setattr(groq_service, "get_order_detail_by_reference", fake_lookup)
+
+    sender = "233244123458"
+    first_reply = run(groq_service.handle_incoming_message(sender, "Please, can you tell me the status of my food?"))
+
+    assert "Please send your *order number* or *tracking code*" in first_reply
+    assert store.get_state(sender) == "awaiting_support_reference"
+
+    second_reply = run(groq_service.handle_incoming_message(sender, "This is my order id 8A8E1807"))
+
+    assert "ORD-8A8E1807" in second_reply
+    assert "out for delivery" in second_reply
+    assert "TRK-8A8E1807" in second_reply
+    assert store.get_state(sender) == "asked_intent"
+
+
+def test_reference_message_still_resolves_status_if_support_state_is_missing(monkeypatch):
+    async def fake_lookup(reference: str):
+        assert reference == "8A8E1807"
+        return SimpleNamespace(
+            id="8a8e1807-order",
+            order_number="ORD-8A8E1807",
+            tracking_code="TRK-8A8E1807",
+            status=OrderStatus.confirmed,
+            total_amount=52.0,
+        )
+
+    monkeypatch.setattr(groq_service, "get_order_detail_by_reference", fake_lookup)
+
+    sender = "233244123459"
+    reply = run(groq_service.handle_incoming_message(sender, "This is my order id #8A8E1807"))
+
+    assert "ORD-8A8E1807" in reply
+    assert "confirmed" in reply
+    assert "TRK-8A8E1807" in reply
+
+
 def test_cancel_flow_requests_reference_and_confirms(monkeypatch):
     async def fake_lookup(reference: str):
         assert reference == "TRK-DEMO1001"

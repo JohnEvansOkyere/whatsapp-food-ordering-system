@@ -118,7 +118,9 @@ PAUSE_SIGNALS = [
 ]
 STATUS_SIGNALS = [
     "status of my order", "what's the status", "whats the status", "order status",
-    "where is my order", "track my order", "how far is my order", "is my order ready",
+    "status of my food", "status of my delivery", "where is my order", "where is my food",
+    "track my order", "track my food", "how far is my order", "how far is my food",
+    "is my order ready",
 ]
 CANCEL_SIGNALS = [
     "cancel my order", "cancel order", "cancel that order", "i want to cancel",
@@ -160,6 +162,9 @@ async def handle_incoming_message(sender: str, text: str, branch_id: str | None 
 
     if state == "confirming_cancellation":
         return await _handle_cancellation_confirmation(sender, text_lower, settings)
+
+    if _looks_like_support_reference_message(text):
+        return await _resolve_support_reference(sender, _extract_order_reference(text), settings, action="status")
 
     if state in {"greeting", "asked_intent", "done"} and _is_order_status_request(text_lower):
         return await _handle_support_intent(sender, text, settings, action="status")
@@ -225,11 +230,28 @@ def _is_pause_message(text_lower: str) -> bool:
 def _is_order_status_request(text_lower: str) -> bool:
     if any(signal in text_lower for signal in STATUS_SIGNALS):
         return True
-    return "order" in text_lower and "status" in text_lower
+    if "status" in text_lower and ("order" in text_lower or "food" in text_lower or "delivery" in text_lower):
+        return True
+    if "where is" in text_lower and ("order" in text_lower or "food" in text_lower):
+        return True
+    return False
 
 
 def _is_order_cancel_request(text_lower: str) -> bool:
     return any(signal in text_lower for signal in CANCEL_SIGNALS)
+
+
+def _looks_like_support_reference_message(text: str) -> bool:
+    reference = _extract_order_reference(text)
+    if not reference:
+        return False
+
+    text_lower = text.lower().strip()
+    if "order" in text_lower or "tracking" in text_lower or "status" in text_lower or "cancel" in text_lower:
+        return True
+
+    normalized = text.strip().upper()
+    return normalized == reference or normalized == f"#{reference}"
 
 
 def _looks_like_recommendation_request(text_lower: str) -> bool:
@@ -314,11 +336,10 @@ def _extract_order_reference(text: str) -> str | None:
         r"\b(?:order\s*(?:id|number)?|tracking\s*code)\s*[:#]?\s*([A-Z0-9\-]{6,})\b",
         r"\b([0-9]{6,})\b",
     ]
-    upper = text.upper()
     for pattern in patterns:
-        match = re.search(pattern, upper)
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            return match.group(1)
+            return match.group(1).upper()
     return None
 
 
