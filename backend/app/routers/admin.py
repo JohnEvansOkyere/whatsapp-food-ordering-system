@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.schemas.order import (
     AdminOrderDetailSchema,
@@ -7,9 +8,15 @@ from app.schemas.order import (
     OrderStatus,
     UpdateOrderStatusSchema,
 )
+from app.services.menu_service import fetch_menu_items, update_menu_item_availability
 from app.services.order_service import cancel_order, get_order_detail, list_orders, update_order_status
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+class UpdateMenuAvailabilitySchema(BaseModel):
+    sold_out: bool | None = None
+    active: bool | None = None
 
 
 @router.get("/orders", response_model=AdminOrderListResponseSchema)
@@ -58,3 +65,25 @@ async def post_admin_order_cancel(order_id: str, payload: CancelOrderSchema):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+
+@router.get("/menu")
+async def get_admin_menu():
+    items = await fetch_menu_items(include_inactive=True, include_sold_out=True)
+    return {"items": items}
+
+
+@router.patch("/menu/{item_id}")
+async def patch_admin_menu_item(item_id: str, payload: UpdateMenuAvailabilitySchema):
+    try:
+        item = await update_menu_item_availability(
+            item_id,
+            sold_out=payload.sold_out,
+            active=payload.active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+    return item

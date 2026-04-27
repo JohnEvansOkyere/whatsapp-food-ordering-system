@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS menu_items (
     category TEXT NOT NULL,
     popular BOOLEAN DEFAULT false,
     spicy BOOLEAN DEFAULT false,
+    sold_out BOOLEAN DEFAULT false,
     active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -66,4 +67,4 @@ CREATE POLICY "service_role_menu" ON menu_items
 
 -- Allow public read on menu items
 CREATE POLICY "public_read_menu" ON menu_items
-    FOR SELECT USING (active = true);
+    FOR SELECT USING (active = true AND sold_out = false);

@@ -11,7 +11,7 @@ import re
 from typing import Any, Literal, TypedDict
 
 from app.services.ai_service import get_ai_response
-from app.services.menu_service import fetch_menu_items, normalize_price
+from app.services.menu_service import fetch_menu_items, is_sold_out, normalize_price
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class OrderLine(TypedDict):
 
 
 class OrderInterpretation(TypedDict):
-    kind: Literal["ready", "need_pick", "need_quantity", "empty"]
+    kind: Literal["ready", "need_pick", "need_quantity", "unavailable", "empty"]
     items: list[OrderLine]
     candidates: list[dict[str, Any]]
     reply_hint: str
@@ -119,7 +119,11 @@ def _filter_by_protein(msg_lower: str, candidates: list[dict[str, Any]]) -> list
     return candidates
 
 
-def find_menu_candidates(customer_message: str, menu_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def find_menu_candidates(
+    customer_message: str,
+    menu_items: list[dict[str, Any]],
+    minimum_score: float = 4.0,
+) -> list[dict[str, Any]]:
     """Return menu rows that plausibly match a vague or short order phrase."""
     stop = {
         "i", "want", "to", "order", "get", "me", "please", "the", "a", "an", "some",
@@ -134,7 +138,7 @@ def find_menu_candidates(customer_message: str, menu_items: list[dict[str, Any]]
         if not item.get("name"):
             continue
         score = _score_item(msg_lower, msg_tokens, item)
-        if score >= 4.0:
+        if score >= minimum_score:
             scored.append((score, item))
 
     scored.sort(key=lambda item: -item[0])
@@ -142,7 +146,7 @@ def find_menu_candidates(customer_message: str, menu_items: list[dict[str, Any]]
         return []
 
     top = scored[0][0]
-    close = [row for score, row in scored if score >= top - 1.5 and score >= 4.0]
+    close = [row for score, row in scored if score >= top - 1.5 and score >= minimum_score]
     close = _filter_by_protein(msg_lower, close)
     return close
 
@@ -252,7 +256,10 @@ async def interpret_order_message(
     for vague items and quantity follow-up.
     """
     if menu_items is None:
-        menu_items = await fetch_menu_items()
+        all_active_menu_items = await fetch_menu_items(include_sold_out=True)
+        menu_items = [item for item in all_active_menu_items if not is_sold_out(item)]
+    else:
+        all_active_menu_items = list(menu_items)
 
     ai_items = await parse_order_from_text(customer_message, menu_items)
     if ai_items:
@@ -297,12 +304,61 @@ async def interpret_order_message(
             "reply_hint": message,
         }
 
+    sold_out_candidates = find_menu_candidates(
+        customer_message,
+        [item for item in all_active_menu_items if is_sold_out(item)],
+        minimum_score=3.0,
+    )
+    sold_out_candidates = _filter_by_protein(customer_message.lower(), sold_out_candidates)
+    if sold_out_candidates:
+        unavailable = sold_out_candidates[0]
+        alternatives = _build_unavailable_alternatives(unavailable, menu_items)
+        message = f"Sorry, *{unavailable['name']}* is sold out right now."
+        if alternatives:
+            message = (
+                f"{message}\n\n"
+                f"You can try:\n{alternatives}\n\n"
+                "Send the one you want and I’ll help you place the order."
+            )
+        return {
+            "kind": "unavailable",
+            "items": [],
+            "candidates": sold_out_candidates[:3],
+            "reply_hint": message,
+        }
+
     return {
         "kind": "empty",
         "items": [],
         "candidates": [],
         "reply_hint": "",
     }
+
+
+def _build_unavailable_alternatives(
+    unavailable_item: dict[str, Any],
+    available_menu_items: list[dict[str, Any]],
+    limit: int = 3,
+) -> str:
+    category = str(unavailable_item.get("category", "")).lower()
+    ranked = sorted(
+        available_menu_items,
+        key=lambda item: (
+            1 if str(item.get("category", "")).lower() == category else 0,
+            1 if item.get("popular") else 0,
+            -normalize_price(item),
+        ),
+        reverse=True,
+    )
+
+    picks: list[str] = []
+    for item in ranked:
+        if str(item.get("id")) == str(unavailable_item.get("id")):
+            continue
+        picks.append(f"- *{item['name']}* — GHS {normalize_price(item):.2f}")
+        if len(picks) >= limit:
+            break
+    return "\n".join(picks)
 
 
 def format_order_for_confirmation(items: list[dict], restaurant_name: str) -> str:

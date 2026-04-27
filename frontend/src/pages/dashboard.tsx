@@ -5,7 +5,6 @@ import {
   Bike,
   CheckCircle2,
   ChefHat,
-  Clock3,
   MapPin,
   PackageCheck,
   PhoneCall,
@@ -15,9 +14,8 @@ import {
   Store,
   TimerReset,
   Truck,
-  UtensilsCrossed,
 } from 'lucide-react'
-import { RESTAURANT } from '@/lib/menuData'
+import { MENU_ITEMS, RESTAURANT } from '@/lib/menuData'
 
 type OrderStatus =
   | 'new'
@@ -68,6 +66,20 @@ interface OrderDetail {
   items: OrderItem[]
   allowed_next_statuses: OrderStatus[]
   events: OrderEvent[]
+}
+
+interface AgentActivityItem {
+  id: string
+  title: string
+  detail: string
+}
+
+interface MenuAvailabilityItem {
+  id: string
+  name: string
+  category: string
+  sold_out: boolean
+  active: boolean
 }
 
 const KANBAN_STATUSES: Array<{ value: OrderStatus; label: string; accent: string }> = [
@@ -438,6 +450,17 @@ const DEMO_ORDERS: OrderDetail[] = [
   },
 ]
 
+function buildDemoMenuAvailability(): MenuAvailabilityItem[] {
+  const soldOutIds = new Set(['waakye', 'spicy-wings'])
+  return MENU_ITEMS.slice(0, 6).map(item => ({
+    id: item.id,
+    name: item.name,
+    category: item.category,
+    active: true,
+    sold_out: soldOutIds.has(item.id),
+  }))
+}
+
 function formatMoney(amount: number) {
   return `${RESTAURANT.currency} ${Number(amount || 0).toFixed(2)}`
 }
@@ -545,6 +568,16 @@ function paymentLabel(paymentStatus: string) {
   }
 }
 
+function channelBadge(channel: string) {
+  if (channel === 'whatsapp') {
+    return 'bg-[#E8FFF0] text-[#157347]'
+  }
+  if (channel === 'web') {
+    return 'bg-[#EEF4FF] text-[#2457C5]'
+  }
+  return 'bg-[#F3EEE8] text-black/60'
+}
+
 function statusBadge(status: OrderStatus) {
   switch (status) {
     case 'new':
@@ -571,13 +604,45 @@ function statusBadge(status: OrderStatus) {
 
 export default function DashboardPage() {
   const [orders, setOrders] = useState<OrderDetail[]>([])
+  const [menuAvailability, setMenuAvailability] = useState<MenuAvailabilityItem[]>(buildDemoMenuAvailability())
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(false)
   const [mutating, setMutating] = useState(false)
+  const [menuBusyId, setMenuBusyId] = useState('')
   const [usingDemoData, setUsingDemoData] = useState(false)
   const [error, setError] = useState('')
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+  const loadMenuAvailability = async () => {
+    try {
+      const res = await fetch(`${apiUrl}/admin/menu`)
+      if (!res.ok) {
+        throw new Error('Failed to load menu availability')
+      }
+
+      const data = await res.json()
+      const items = Array.isArray(data.items) ? data.items : []
+      if (items.length === 0) {
+        setMenuAvailability(buildDemoMenuAvailability())
+        return
+      }
+
+      setMenuAvailability(
+        items
+          .filter((item: { active?: boolean }) => item.active !== false)
+          .map((item: { id: string; name: string; category?: string; sold_out?: boolean; active?: boolean }) => ({
+            id: item.id,
+            name: item.name,
+            category: item.category || 'other',
+            sold_out: Boolean(item.sold_out),
+            active: item.active !== false,
+          }))
+      )
+    } catch (_err) {
+      setMenuAvailability(buildDemoMenuAvailability())
+    }
+  }
 
   const fetchDashboard = async () => {
     setLoading(true)
@@ -630,11 +695,13 @@ export default function DashboardPage() {
 
   useEffect(() => {
     void fetchDashboard()
+    void loadMenuAvailability()
   }, [])
 
   useEffect(() => {
     const interval = window.setInterval(() => {
       void fetchDashboard()
+      void loadMenuAvailability()
     }, 15000)
     return () => window.clearInterval(interval)
   }, [])
@@ -647,17 +714,40 @@ export default function DashboardPage() {
   const summary = useMemo(
     () => ({
       total: orders.length,
-      active: orders.filter(order =>
-        ['new', 'confirmed', 'preparing', 'ready', 'out_for_delivery'].includes(order.status)
-      ).length,
       pendingAction: orders.filter(order => ['new', 'ready'].includes(order.status)).length,
       inDelivery: orders.filter(order => order.status === 'out_for_delivery').length,
-      averageTicket:
-        orders.length > 0
-          ? orders.reduce((sum, order) => sum + Number(order.total_amount || 0), 0) / orders.length
-          : 0,
+      whatsapp: orders.filter(order => order.channel === 'whatsapp').length,
+      web: orders.filter(order => order.channel === 'web').length,
     }),
     [orders]
+  )
+
+  const agentActivity = useMemo<AgentActivityItem[]>(() => {
+    return [...orders]
+      .filter(order => order.channel === 'whatsapp')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 3)
+      .map(order => {
+        let title = 'Handled WhatsApp request'
+        if (order.status === 'new') {
+          title = 'New WhatsApp order captured'
+        } else if (['confirmed', 'preparing'].includes(order.status)) {
+          title = 'Order details confirmed in chat'
+        } else if (['ready', 'out_for_delivery', 'delivered'].includes(order.status)) {
+          title = 'Tracking and follow-up ready'
+        }
+
+        return {
+          id: order.id,
+          title,
+          detail: `${order.customer_name || order.customer_phone} • ${formatTimeSince(order.created_at)}`,
+        }
+      })
+  }, [orders])
+
+  const visibleMenuAvailability = useMemo(
+    () => menuAvailability.slice(0, 5),
+    [menuAvailability]
   )
 
   const groupedOrders = useMemo(
@@ -697,6 +787,37 @@ export default function DashboardPage() {
     }
   }
 
+  const toggleSoldOut = async (item: MenuAvailabilityItem) => {
+    if (usingDemoData) return
+
+    setMenuBusyId(item.id)
+    setError('')
+    try {
+      const res = await fetch(`${apiUrl}/admin/menu/${item.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sold_out: !item.sold_out,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to update menu availability')
+      }
+
+      setMenuAvailability(prev =>
+        prev.map(entry =>
+          entry.id === item.id ? { ...entry, sold_out: Boolean(data.sold_out) } : entry
+        )
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update menu availability'
+      setError(message)
+    } finally {
+      setMenuBusyId('')
+    }
+  }
+
   return (
     <>
       <Head>
@@ -732,9 +853,7 @@ export default function DashboardPage() {
                     Orders Coming In, At A Glance
                   </h1>
                   <p className="mt-3 max-w-3xl text-sm text-black/65 md:text-base">
-                    A simple screen a restaurant can keep open to follow WhatsApp and web orders in
-                    one place, even when the Meta business chat itself is not usable like a staff
-                    inbox.
+                    A clean live screen for tracking WhatsApp and web orders in one place during service.
                   </p>
                 </div>
               </div>
@@ -775,13 +894,13 @@ export default function DashboardPage() {
               </div>
             )}
 
-            <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
                 <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
                   <Store size={16} />
-                  Branch Status
+                  Restaurant Status
                 </div>
-                <p className="mt-4 text-2xl font-black">Open</p>
+                <p className="mt-4 text-2xl font-black">Open Now</p>
                 <p className="mt-1 text-sm text-black/45">{RESTAURANT.address}</p>
               </div>
               <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
@@ -793,24 +912,96 @@ export default function DashboardPage() {
               </div>
               <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
                 <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
-                  <Clock3 size={16} />
-                  Still In Progress
-                </div>
-                <p className="mt-4 text-3xl font-black">{summary.active}</p>
-              </div>
-              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
-                <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
                   <TimerReset size={16} />
                   Need Attention
                 </div>
                 <p className="mt-4 text-3xl font-black">{summary.pendingAction}</p>
+                <p className="mt-1 text-sm text-black/45">New or ready for the next step</p>
               </div>
               <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
                 <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
-                  <Truck size={16} />
-                  On The Road
+                  <MessageIcon />
+                  Order Sources
                 </div>
-                <p className="mt-4 text-3xl font-black">{summary.inDelivery}</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <span className="rounded-full bg-[#E8FFF0] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-[#157347]">
+                    WhatsApp {summary.whatsapp}
+                  </span>
+                  <span className="rounded-full bg-[#EEF4FF] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-[#2457C5]">
+                    Web {summary.web}
+                  </span>
+                </div>
+                <p className="mt-3 text-sm text-black/45">{summary.inDelivery} currently out for delivery</p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.22em] text-brand-orange">
+                      Menu Availability
+                    </p>
+                    <h2 className="mt-2 text-xl font-black">Mark items sold out fast</h2>
+                  </div>
+                  <div className="rounded-full bg-[#E8FFF0] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-[#157347]">
+                    {usingDemoData ? 'Demo only' : 'Live menu'}
+                  </div>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {visibleMenuAvailability.map(item => (
+                    <div key={item.id} className="flex items-center justify-between gap-3 rounded-2xl bg-[#f8f2ea] px-4 py-3">
+                      <div>
+                        <p className="text-sm font-bold text-brand-dark">{item.name}</p>
+                        <p className="mt-1 text-xs uppercase tracking-[0.12em] text-black/45">{item.category}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase ${
+                            item.sold_out ? 'bg-[#FFE8E5] text-[#B5472E]' : 'bg-[#E8FFF0] text-[#157347]'
+                          }`}
+                        >
+                          {item.sold_out ? 'Sold out' : 'Available'}
+                        </span>
+                        <button
+                          onClick={() => void toggleSoldOut(item)}
+                          disabled={usingDemoData || menuBusyId === item.id}
+                          className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-[0.08em] text-brand-dark transition hover:border-brand-orange hover:text-brand-orange disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {usingDemoData ? 'Preview' : menuBusyId === item.id ? 'Saving' : item.sold_out ? 'Restock' : 'Sold out'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.22em] text-brand-orange">
+                      Ama Activity
+                    </p>
+                    <h2 className="mt-2 text-xl font-black">Recent assistant work</h2>
+                  </div>
+                  <span className="rounded-full bg-[#f8f2ea] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-black/60">
+                    Live chat flow
+                  </span>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {agentActivity.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-black/10 bg-[#faf4ed] px-4 py-4 text-sm text-black/45">
+                      No WhatsApp activity yet.
+                    </div>
+                  ) : (
+                    agentActivity.map(item => (
+                      <div key={item.id} className="rounded-2xl bg-[#f8f2ea] px-4 py-3">
+                        <p className="text-sm font-bold text-brand-dark">{item.title}</p>
+                        <p className="mt-1 text-sm text-black/50">{item.detail}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -821,10 +1012,10 @@ export default function DashboardPage() {
             <section>
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-lg font-black uppercase tracking-[0.2em] text-black/55">
-                  Today&apos;s Order Board
+                  Live Order Board
                 </h2>
                 <p className="text-sm text-black/50">
-                  {usingDemoData ? 'Showing sample orders for presentation' : 'Connected to current order data'}
+                  {usingDemoData ? 'Sample orders loaded for presentation' : 'Connected to current order flow'}
                 </p>
               </div>
 
@@ -875,11 +1066,19 @@ export default function DashboardPage() {
                               </span>
                             </div>
 
-                            <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-black/55">
-                              <span>{formatMoney(order.total_amount)}</span>
-                              <span className="text-right">{channelLabel(order.channel)}</span>
-                              <span>{paymentLabel(order.payment_status)}</span>
-                              <span className="text-right">{formatTimeSince(order.created_at)}</span>
+                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.08em]">
+                              <span className={`rounded-full px-2.5 py-1 ${channelBadge(order.channel)}`}>
+                                {channelLabel(order.channel)}
+                              </span>
+                              <span className="rounded-full bg-[#f6efe7] px-2.5 py-1 text-black/60">
+                                {paymentLabel(order.payment_status)}
+                              </span>
+                              <span className="ml-auto text-sm font-black normal-case tracking-normal text-brand-dark">
+                                {formatMoney(order.total_amount)}
+                              </span>
+                              <span className="text-sm font-medium normal-case tracking-normal text-black/45">
+                                {formatTimeSince(order.created_at)}
+                              </span>
                             </div>
                           </button>
                         ))
@@ -897,7 +1096,7 @@ export default function DashboardPage() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <p className="text-xs font-bold uppercase tracking-[0.25em] text-black/40">
-                          Selected Order
+                          Order Snapshot
                         </p>
                         <h2
                           className="mt-2 text-3xl font-black"
@@ -909,11 +1108,16 @@ export default function DashboardPage() {
                           {channelLabel(selectedOrder.channel)} • {formatTimeSince(selectedOrder.created_at)}
                         </p>
                       </div>
-                      <span
-                        className={`rounded-full px-3 py-1 text-xs font-bold uppercase ${statusBadge(selectedOrder.status)}`}
-                      >
-                        {displayStatus(selectedOrder.status)}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full px-3 py-1 text-xs font-bold uppercase ${channelBadge(selectedOrder.channel)}`}>
+                          {channelLabel(selectedOrder.channel)}
+                        </span>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-bold uppercase ${statusBadge(selectedOrder.status)}`}
+                        >
+                          {displayStatus(selectedOrder.status)}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
