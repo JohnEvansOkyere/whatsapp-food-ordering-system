@@ -23,6 +23,8 @@ ConversationState = Literal[
     "asked_intent",       # Asked "know what you want?"
     "taking_order",       # Customer is telling us what they want
     "clarifying_order",   # Picking between menu options or sending quantity
+    "awaiting_support_reference",  # Waiting for order/tracking reference
+    "confirming_cancellation",     # Asked customer to confirm cancellation
     "confirming_order",   # Showed order summary, waiting for yes/no
     "collecting_address", # Order confirmed, need delivery address
     "collecting_payment", # Have address, need payment method
@@ -41,6 +43,7 @@ class Session(TypedDict):
     branch_id: str | None
     pending_items: list[dict]   # Parsed order items awaiting confirmation
     order_clarification: dict | None  # pick_variant / quantity follow-up
+    support_request: dict | None  # status/cancel support flow
     delivery_address: str | None
     payment_method: str | None  # "momo" | "cash"
     customer_name: str | None
@@ -63,6 +66,7 @@ def _empty_session() -> Session:
         "branch_id": None,
         "pending_items": [],
         "order_clarification": None,
+        "support_request": None,
         "delivery_address": None,
         "payment_method": None,
         "customer_name": None,
@@ -103,6 +107,14 @@ def set_order_clarification(phone: str, data: dict | None) -> None:
 
 def get_order_clarification(phone: str) -> dict | None:
     return get_session(phone).get("order_clarification")
+
+
+def set_support_request(phone: str, data: dict | None) -> None:
+    get_session(phone)["support_request"] = data
+
+
+def get_support_request(phone: str) -> dict | None:
+    return get_session(phone).get("support_request")
 
 
 def set_branch_id(phone: str, branch_id: str) -> None:

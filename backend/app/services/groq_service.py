@@ -32,9 +32,8 @@ from app.services.customer_service import (
     get_latest_order_status,
     format_returning_customer_greeting,
 )
-from app.services.order_service import create_order
-from app.services.order_service import get_status_label
-from app.schemas.order import CreateOrderSchema, OrderItemSchema
+from app.services.order_service import cancel_order, create_order, get_order_detail_by_reference, get_status_label
+from app.schemas.order import CancelOrderSchema, CreateOrderSchema, OrderItemSchema, OrderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +120,10 @@ STATUS_SIGNALS = [
     "status of my order", "what's the status", "whats the status", "order status",
     "where is my order", "track my order", "how far is my order", "is my order ready",
 ]
+CANCEL_SIGNALS = [
+    "cancel my order", "cancel order", "cancel that order", "i want to cancel",
+    "i need to cancel", "can i cancel", "please cancel", "stop my order",
+]
 UNCERTAIN_REPLY_SIGNALS = [
     "i'm not sure", "i am not sure", "i dont know", "i don't know", "not certain",
     "can't confirm", "cannot confirm", "having trouble right now", "try again in a moment",
@@ -134,6 +137,8 @@ RESTAURANT_TOPIC_SIGNALS = [
     "jollof", "waakye", "fried rice", "pizza", "chicken", "chips", "plantain",
     "sobolo", "malt", "water",
 ]
+SUPPORT_YES_SIGNALS = {"yes", "yeah", "yep", "confirm", "cancel it", "go ahead"}
+SUPPORT_NO_SIGNALS = {"no", "nope", "keep it", "don't cancel", "dont cancel", "leave it"}
 
 
 async def handle_incoming_message(sender: str, text: str, branch_id: str | None = None) -> str:
@@ -150,8 +155,17 @@ async def handle_incoming_message(sender: str, text: str, branch_id: str | None 
 
     text_lower = text.lower().strip()
 
-    if _is_order_status_request(text_lower):
-        return await _handle_order_status_request(sender)
+    if state == "awaiting_support_reference":
+        return await _handle_support_reference(sender, text, settings)
+
+    if state == "confirming_cancellation":
+        return await _handle_cancellation_confirmation(sender, text_lower, settings)
+
+    if state in {"greeting", "asked_intent", "done"} and _is_order_status_request(text_lower):
+        return await _handle_support_intent(sender, text, settings, action="status")
+
+    if state in {"greeting", "asked_intent", "done"} and _is_order_cancel_request(text_lower):
+        return await _handle_support_intent(sender, text, settings, action="cancel")
 
     if state == "greeting":
         return await _handle_greeting(sender, text, settings)
@@ -212,6 +226,10 @@ def _is_order_status_request(text_lower: str) -> bool:
     if any(signal in text_lower for signal in STATUS_SIGNALS):
         return True
     return "order" in text_lower and "status" in text_lower
+
+
+def _is_order_cancel_request(text_lower: str) -> bool:
+    return any(signal in text_lower for signal in CANCEL_SIGNALS)
 
 
 def _looks_like_recommendation_request(text_lower: str) -> bool:
@@ -286,6 +304,152 @@ async def _handle_order_status_request(sender: str) -> str:
             f"{reply}\n\n"
             f"Tracking code: *{tracking_code}*"
         )
+    return reply
+
+
+def _extract_order_reference(text: str) -> str | None:
+    patterns = [
+        r"\b(TRK-[A-Z0-9\-]{4,})\b",
+        r"\b(ORD-[A-Z0-9\-]{4,})\b",
+        r"\b(?:order\s*(?:id|number)?|tracking\s*code)\s*[:#]?\s*([A-Z0-9\-]{6,})\b",
+        r"\b([0-9]{6,})\b",
+    ]
+    upper = text.upper()
+    for pattern in patterns:
+        match = re.search(pattern, upper)
+        if match:
+            return match.group(1)
+    return None
+
+
+async def _handle_support_intent(sender: str, text: str, settings, *, action: str) -> str:
+    reference = _extract_order_reference(text)
+    if reference:
+        return await _resolve_support_reference(sender, reference, settings, action=action)
+
+    store.set_support_request(sender, {"action": action})
+    store.set_state(sender, "awaiting_support_reference")
+
+    if action == "cancel":
+        return (
+            "Sure. Please send your *order number* or *tracking code* first so I can pull it up.\n\n"
+            "Example: *ORD-8A41BC2D* or *TRK-DEMO1001*"
+        )
+
+    return (
+        "Sure. Please send your *order number* or *tracking code* first so I can check it.\n\n"
+        "Example: *ORD-8A41BC2D* or *TRK-DEMO1001*"
+    )
+
+
+async def _handle_support_reference(sender: str, text: str, settings) -> str:
+    support_request = store.get_support_request(sender) or {}
+    action = str(support_request.get("action") or "status")
+
+    if text.lower().strip() in {"latest", "my latest order", "recent"} and action == "status":
+        latest_order = await get_latest_order_status(sender)
+        if latest_order:
+            store.set_support_request(sender, None)
+            store.set_state(sender, "asked_intent")
+            return _format_status_reply_from_row(latest_order)
+
+    reference = _extract_order_reference(text)
+    if not reference:
+        return (
+            "Please send the *order number* or *tracking code* so I can check it.\n\n"
+            "For example: *ORD-8A41BC2D* or *TRK-DEMO1001*"
+        )
+
+    return await _resolve_support_reference(sender, reference, settings, action=action)
+
+
+async def _resolve_support_reference(sender: str, reference: str, settings, *, action: str) -> str:
+    order = await get_order_detail_by_reference(reference)
+    if not order:
+        return (
+            "I couldn’t find an order with that reference yet.\n\n"
+            "Please check the *order number* or *tracking code* and send it again."
+        )
+
+    if action == "cancel":
+        if order.status in {OrderStatus.delivered, OrderStatus.cancelled, OrderStatus.rejected}:
+            store.set_support_request(sender, None)
+            store.set_state(sender, "asked_intent")
+            status_label = get_status_label(order.status).lower()
+            return f"That order is already *{status_label}*, so I can’t cancel it from here."
+
+        store.set_support_request(
+            sender,
+            {"action": "cancel", "order_id": order.id, "reference": reference},
+        )
+        store.set_state(sender, "confirming_cancellation")
+        return (
+            f"I found order *#{order.order_number or order.id[:8].upper()}*.\n"
+            f"Current status: *{get_status_label(order.status).lower()}*\n"
+            f"Total: *GHS {order.total_amount:.2f}*\n\n"
+            "Reply *Yes* to cancel this order or *No* to keep it."
+        )
+
+    store.set_support_request(sender, None)
+    store.set_state(sender, "asked_intent")
+    return _format_status_reply(order)
+
+
+async def _handle_cancellation_confirmation(sender: str, text_lower: str, settings) -> str:
+    support_request = store.get_support_request(sender) or {}
+    order_id = support_request.get("order_id")
+    if not order_id:
+        store.set_support_request(sender, None)
+        store.set_state(sender, "asked_intent")
+        return "Please send your order number or tracking code so I can help."
+
+    if text_lower in SUPPORT_NO_SIGNALS:
+        store.set_support_request(sender, None)
+        store.set_state(sender, "asked_intent")
+        return "No problem. I’ll leave the order as it is."
+
+    if text_lower in SUPPORT_YES_SIGNALS:
+        cancelled = await cancel_order(
+            order_id,
+            CancelOrderSchema(
+                reason_code="customer_changed_mind",
+                reason_note="Customer requested cancellation on WhatsApp.",
+                actor_label="whatsapp-assistant",
+            ),
+        )
+        store.set_support_request(sender, None)
+        store.set_state(sender, "asked_intent")
+        if not cancelled:
+            return (
+                "I couldn’t cancel that order right now.\n\n"
+                f"Please reach customer support on {settings.customer_support_whatsapp}."
+            )
+        return (
+            f"Your order *#{cancelled.order_number or cancelled.id[:8].upper()}* is now *{get_status_label(cancelled.status).lower()}*."
+        )
+
+    return "Reply *Yes* to cancel the order or *No* to keep it."
+
+
+def _format_status_reply_from_row(order_row: dict) -> str:
+    status_value = str(order_row.get("status", "new")).lower()
+    order_id = str(order_row.get("order_number") or str(order_row.get("id", ""))[:8].upper())
+    tracking_code = order_row.get("tracking_code")
+    status_label = get_status_label(status_value).lower()
+
+    reply = f"Your order *#{order_id}* is currently *{status_label}*."
+    if tracking_code:
+        reply = f"{reply}\n\nTracking code: *{tracking_code}*"
+    return reply
+
+
+def _format_status_reply(order) -> str:
+    reply = (
+        f"Your order *#{order.order_number or order.id[:8].upper()}* is currently "
+        f"*{get_status_label(order.status).lower()}*."
+    )
+    if order.tracking_code:
+        reply = f"{reply}\n\nTracking code: *{order.tracking_code}*"
     return reply
 
 

@@ -8,6 +8,7 @@ enforcing deterministic pricing and backend-owned state transitions.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -276,6 +277,89 @@ async def _get_order_row_by_tracking_code(tracking_code: str) -> dict | None:
     )
     if result.data:
         return result.data[0]
+    return None
+
+
+async def _get_order_row_by_order_number(order_number: str) -> dict | None:
+    supabase = get_supabase()
+    result = (
+        supabase.table("orders")
+        .select("*")
+        .eq("order_number", order_number)
+        .limit(1)
+        .execute()
+    )
+    if result.data:
+        return result.data[0]
+    return None
+
+
+def _normalize_reference(reference: str) -> str:
+    cleaned = reference.strip().upper()
+    cleaned = re.sub(r"[^A-Z0-9\-]", "", cleaned)
+    return cleaned
+
+
+def _reference_candidates(reference: str) -> list[str]:
+    normalized = _normalize_reference(reference)
+    if not normalized:
+        return []
+
+    candidates = [normalized]
+    if normalized.startswith("ORDER"):
+        trimmed = normalized.replace("ORDER", "", 1).lstrip("-#")
+        if trimmed:
+            candidates.append(trimmed)
+    if not normalized.startswith("ORD-"):
+        candidates.append(f"ORD-{normalized}")
+    if not normalized.startswith("TRK-"):
+        candidates.append(f"TRK-{normalized}")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return deduped
+
+
+async def get_order_detail_by_reference(reference: str) -> AdminOrderDetailSchema | None:
+    candidates = _reference_candidates(reference)
+    if not candidates:
+        return None
+
+    for candidate in candidates:
+        tracking_row = await _get_order_row_by_tracking_code(candidate)
+        if tracking_row:
+            return await get_order_detail(str(tracking_row["id"]))
+
+        order_row = await _get_order_row_by_order_number(candidate)
+        if order_row:
+            return await get_order_detail(str(order_row["id"]))
+
+        if re.fullmatch(r"[0-9A-F\-]{8,36}", candidate):
+            by_id = await _get_order_row_by_id(candidate)
+            if by_id:
+                return await get_order_detail(str(by_id["id"]))
+
+    short_ref = candidates[0].replace("ORD-", "").replace("TRK-", "")
+    supabase = get_supabase()
+    result = supabase.table("orders").select("*").order("created_at", desc=True).limit(200).execute()
+    rows = result.data or []
+    for row in rows:
+        order_number = str(row.get("order_number") or "").upper()
+        tracking_code = str(row.get("tracking_code") or "").upper()
+        order_id = str(row.get("id") or "").upper()
+        if (
+            short_ref
+            and (
+                order_number.endswith(short_ref)
+                or tracking_code.endswith(short_ref)
+                or order_id.startswith(short_ref)
+            )
+        ):
+            return await get_order_detail(str(row["id"]))
     return None
 
 
