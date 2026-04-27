@@ -134,6 +134,22 @@ class LegacyCompatSupabase(FakeSupabase):
         return LegacyCompatQuery(self, table_name)
 
 
+class LegacyPhoneLookupQuery(FakeQuery):
+    def execute(self):
+        if (
+            self.table_name == "orders"
+            and self.insert_payload is None
+            and any(field == "customer_phone_snapshot" for field, _value in self.filters)
+        ):
+            raise Exception("column orders.customer_phone_snapshot does not exist")
+        return super().execute()
+
+
+class LegacyPhoneLookupSupabase(FakeSupabase):
+    def table(self, table_name):
+        return LegacyPhoneLookupQuery(self, table_name)
+
+
 def api_request(app, method, url, **kwargs):
     async def _request():
         transport = httpx.ASGITransport(app=app)
@@ -333,3 +349,29 @@ def test_public_order_creation_falls_back_for_legacy_orders_schema(app, monkeypa
     assert fake_supabase.tables["orders"][0]["items"][0]["name"] == "Sobolo (Zobo)"
     assert fake_supabase.tables["order_items"] == []
     assert fake_supabase.tables["order_events"] == []
+
+
+def test_customer_service_falls_back_when_snapshot_phone_column_is_missing(monkeypatch):
+    fake_supabase = LegacyPhoneLookupSupabase()
+    fake_supabase.tables["orders"].append(
+        {
+            "id": str(uuid.uuid4()),
+            "customer_phone": "233245540271",
+            "items": [{"name": "Jollof Rice + Chicken", "quantity": 1}],
+            "total_amount": 45,
+            "tracking_code": "TRK-DEMO1001",
+            "status": "confirmed",
+            "created_at": "2026-04-27T12:00:00+00:00",
+        }
+    )
+
+    monkeypatch.setattr(customer_service, "get_supabase", lambda: fake_supabase)
+
+    last_order = asyncio.run(customer_service.get_last_order("233245540271"))
+    latest_status = asyncio.run(customer_service.get_latest_order_status("233245540271"))
+
+    assert last_order is not None
+    assert last_order["total_amount"] == 45
+    assert latest_status is not None
+    assert latest_status["tracking_code"] == "TRK-DEMO1001"
+    assert latest_status["status"] == "confirmed"

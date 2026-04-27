@@ -13,6 +13,37 @@ from app.database import get_supabase
 logger = logging.getLogger(__name__)
 
 
+def _is_orders_phone_snapshot_compat_error(exc: Exception) -> bool:
+    message = str(exc)
+    markers = [
+        "customer_phone_snapshot",
+        "column orders.customer_phone_snapshot does not exist",
+        "column of 'orders'",
+        "schema cache",
+    ]
+    return any(marker in message for marker in markers)
+
+
+def _orders_query_by_phone(supabase, phone: str, *, fields: str):
+    return (
+        supabase.table("orders")
+        .select(fields)
+        .eq("customer_phone_snapshot", phone)
+        .order("created_at", desc=True)
+        .limit(1)
+    )
+
+
+def _orders_legacy_query_by_phone(supabase, phone: str, *, fields: str):
+    return (
+        supabase.table("orders")
+        .select(fields)
+        .eq("customer_phone", phone)
+        .order("created_at", desc=True)
+        .limit(1)
+    )
+
+
 async def get_customer(phone: str) -> dict | None:
     """Look up a customer by phone number."""
     try:
@@ -36,14 +67,25 @@ async def get_last_order(phone: str) -> dict | None:
     """Fetch the customer's most recent order for reorder prompts."""
     try:
         supabase = get_supabase()
-        result = (
-            supabase.table("orders")
-            .select("id, items, total_amount, created_at")
-            .eq("customer_phone_snapshot", phone)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
+        try:
+            result = _orders_query_by_phone(
+                supabase,
+                phone,
+                fields="id, items, total_amount, created_at",
+            ).execute()
+        except Exception as exc:
+            if not _is_orders_phone_snapshot_compat_error(exc):
+                raise
+            logger.warning(
+                "Falling back to legacy order phone lookup for %s because customer_phone_snapshot is unavailable: %s",
+                phone,
+                exc,
+            )
+            result = _orders_legacy_query_by_phone(
+                supabase,
+                phone,
+                fields="id, items, total_amount, created_at",
+            ).execute()
         if result.data:
             return result.data[0]
         return None
@@ -56,14 +98,25 @@ async def get_latest_order_status(phone: str) -> dict | None:
     """Fetch the customer's most recent order status for WhatsApp tracking."""
     try:
         supabase = get_supabase()
-        result = (
-            supabase.table("orders")
-            .select("id, tracking_code, status, total_amount, created_at")
-            .eq("customer_phone_snapshot", phone)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
+        try:
+            result = _orders_query_by_phone(
+                supabase,
+                phone,
+                fields="id, tracking_code, status, total_amount, created_at",
+            ).execute()
+        except Exception as exc:
+            if not _is_orders_phone_snapshot_compat_error(exc):
+                raise
+            logger.warning(
+                "Falling back to legacy order status lookup for %s because customer_phone_snapshot is unavailable: %s",
+                phone,
+                exc,
+            )
+            result = _orders_legacy_query_by_phone(
+                supabase,
+                phone,
+                fields="id, tracking_code, status, total_amount, created_at",
+            ).execute()
         if result.data:
             return result.data[0]
         return None

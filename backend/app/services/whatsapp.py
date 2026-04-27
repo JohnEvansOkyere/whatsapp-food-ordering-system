@@ -48,8 +48,9 @@ def _build_receipt(order: OrderResponseSchema, restaurant_name: str) -> str:
     from datetime import datetime, timezone
 
     divider = "━━━━━━━━━━━━━━━━━━━━"
-    short_id = order.id[:8].upper()
+    order_reference = order.order_number or order.id[:8].upper()
     now = datetime.now(timezone.utc).strftime("%d %b %Y, %I:%M %p")
+    tracking_line = f"Tracking: *{order.tracking_code}*\n" if order.tracking_code else ""
 
     items_lines = []
     for item in order.items:
@@ -65,7 +66,8 @@ def _build_receipt(order: OrderResponseSchema, restaurant_name: str) -> str:
         f"🧾 *{restaurant_name.upper()}*\n"
         f"   ORDER RECEIPT\n"
         f"{divider}\n"
-        f"Order #*{short_id}*\n"
+        f"Order ID: *{order_reference}*\n"
+        f"{tracking_line}"
         f"Date: {now}\n"
         f"{divider}\n"
         f"*ITEMS*\n"
@@ -90,7 +92,7 @@ def _build_receipt(order: OrderResponseSchema, restaurant_name: str) -> str:
 def _build_owner_notification(order: OrderResponseSchema, restaurant_name: str) -> str:
     """Build the order alert sent to the restaurant owner."""
     divider = "━━━━━━━━━━━━━━━━━━━━"
-    short_id = order.id[:8].upper()
+    order_reference = order.order_number or order.id[:8].upper()
 
     items_lines = "\n".join(
         [f"  • {item.quantity}x {item.name} — GHS {item.total_price:.2f}"
@@ -103,7 +105,7 @@ def _build_owner_notification(order: OrderResponseSchema, restaurant_name: str) 
     return (
         f"🔔 *NEW ORDER — {restaurant_name}*\n"
         f"{divider}\n"
-        f"Order #*{short_id}*\n"
+        f"Order ID: *{order_reference}*\n"
         f"👤 Customer: {customer}\n"
         f"📱 Phone: {order.customer_phone}\n"
         f"{divider}\n"
