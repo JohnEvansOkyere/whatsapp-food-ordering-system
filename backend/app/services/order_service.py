@@ -9,17 +9,21 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.database import get_supabase
+from app.config import get_settings
 from app.schemas.order import (
     AdminOrderDetailSchema,
     AdminOrderListItemSchema,
     CancelOrderSchema,
     CreateOrderSchema,
     OrderEventSchema,
+    OrderFeedbackSchema,
     OrderItemInputSchema,
+    OrderItemSelectionSchema,
     OrderItemSchema,
     OrderResponseSchema,
     OrderStatus,
@@ -27,8 +31,10 @@ from app.schemas.order import (
     OrderTrackingResponseSchema,
     PaymentMethod,
     PaymentStatus,
+    UpdatePaymentSchema,
 )
 from app.services.customer_service import upsert_customer
+from app.services.branch_service import get_public_branch
 from app.services.menu_service import fetch_menu_items, normalize_price
 from app.services.whatsapp import (
     send_order_notification_to_owner,
@@ -44,6 +50,7 @@ STATUS_LABELS: dict[str, str] = {
     "preparing": "Being prepared",
     "ready": "Ready",
     "out_for_delivery": "Out for delivery",
+    "delayed": "Delayed",
     "delivered": "Delivered",
     "cancel_requested": "Cancellation requested",
     "cancelled": "Cancelled",
@@ -51,11 +58,12 @@ STATUS_LABELS: dict[str, str] = {
 }
 
 ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
-    "new": {"confirmed", "rejected", "cancel_requested", "cancelled"},
-    "confirmed": {"preparing", "cancel_requested", "cancelled"},
-    "preparing": {"ready", "cancel_requested"},
-    "ready": {"out_for_delivery", "delivered", "cancel_requested"},
-    "out_for_delivery": {"delivered", "cancel_requested"},
+    "new": {"confirmed", "rejected", "cancel_requested", "cancelled", "delayed"},
+    "confirmed": {"preparing", "cancel_requested", "cancelled", "delayed"},
+    "preparing": {"ready", "cancel_requested", "delayed"},
+    "ready": {"out_for_delivery", "delivered", "cancel_requested", "delayed"},
+    "out_for_delivery": {"delivered", "cancel_requested", "delayed"},
+    "delayed": {"confirmed", "preparing", "ready", "out_for_delivery", "cancel_requested", "cancelled"},
     "cancel_requested": {"cancelled", "confirmed", "preparing", "ready", "out_for_delivery"},
     "cancelled": set(),
     "rejected": set(),
@@ -68,6 +76,7 @@ STATUS_EVENT_TYPES: dict[str, str] = {
     "preparing": "order_preparing",
     "ready": "order_ready",
     "out_for_delivery": "order_dispatched",
+    "delayed": "order_delayed",
     "delivered": "order_delivered",
     "cancel_requested": "cancellation_requested",
     "cancelled": "order_cancelled",
@@ -84,6 +93,8 @@ def _is_schema_compatibility_error(exc: Exception) -> bool:
         "column of 'order_items'",
         "column of 'order_events'",
         "column of 'customers'",
+        "Could not find the table 'public.payments'",
+        'relation "public.payments" does not exist',
     ]
     return any(marker in message for marker in markers)
 
@@ -129,8 +140,24 @@ def _build_tracking_code() -> str:
     return f"TRK-{uuid.uuid4().hex[:10].upper()}"
 
 
-async def _resolve_priced_items(items: list[OrderItemInputSchema]) -> list[OrderItemSchema]:
-    menu_items = await fetch_menu_items()
+def _build_public_tracking_token() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def _build_tracking_url(row: dict) -> str | None:
+    reference = row.get("public_tracking_token") or row.get("tracking_code")
+    if not reference:
+        return None
+    base_url = get_settings().public_web_url.rstrip("/")
+    return f"{base_url}/track/{reference}"
+
+
+async def _resolve_priced_items(
+    items: list[OrderItemInputSchema],
+    *,
+    branch_id: str | None = None,
+) -> list[OrderItemSchema]:
+    menu_items = await fetch_menu_items(branch_id=branch_id)
     menu_by_id = {str(item["id"]): item for item in menu_items if item.get("id")}
 
     resolved: list[OrderItemSchema] = []
@@ -141,6 +168,46 @@ async def _resolve_priced_items(items: list[OrderItemInputSchema]) -> list[Order
 
         quantity = max(1, int(item.quantity))
         unit_price = normalize_price(menu_row)
+        option_groups = {
+            str(group.get("id")): group
+            for group in menu_row.get("option_groups", [])
+        }
+        resolved_selections: list[OrderItemSelectionSchema] = []
+        group_counts: dict[str, int] = {}
+        for selection in item.selections:
+            group = option_groups.get(selection.group_id)
+            if not group:
+                raise ValueError(
+                    f"Invalid option group for {menu_row['name']}: {selection.group_id}"
+                )
+            option = next(
+                (
+                    candidate
+                    for candidate in group.get("options", [])
+                    if str(candidate.get("id")) == selection.option_id
+                ),
+                None,
+            )
+            if not option:
+                raise ValueError(
+                    f"Invalid option for {menu_row['name']}: {selection.option_id}"
+                )
+            group_counts[selection.group_id] = group_counts.get(selection.group_id, 0) + 1
+            max_selections = 1 if group.get("type") == "single" else int(
+                group.get("max_selections") or 99
+            )
+            if group_counts[selection.group_id] > max_selections:
+                raise ValueError(f"Too many selections for {group.get('name')}")
+            option_price = normalize_price(option)
+            unit_price += option_price
+            resolved_selections.append(
+                OrderItemSelectionSchema(
+                    group_id=selection.group_id,
+                    option_id=selection.option_id,
+                    name=str(option.get("name") or selection.option_id),
+                    price=option_price,
+                )
+            )
         total_price = round(unit_price * quantity, 2)
 
         resolved.append(
@@ -150,6 +217,7 @@ async def _resolve_priced_items(items: list[OrderItemInputSchema]) -> list[Order
                 quantity=quantity,
                 unit_price=unit_price,
                 total_price=total_price,
+                selections=resolved_selections,
             )
         )
     return resolved
@@ -163,6 +231,7 @@ def _build_legacy_items(items: list[OrderItemSchema]) -> list[dict[str, object]]
             "quantity": item.quantity,
             "unit_price": item.unit_price,
             "total_price": item.total_price,
+            "selections": [selection.model_dump() for selection in item.selections],
         }
         for item in items
     ]
@@ -176,6 +245,10 @@ def _map_order_item_rows(rows: list[dict]) -> list[OrderItemSchema]:
             quantity=int(row.get("quantity", 1)),
             unit_price=_to_float(row.get("unit_price")),
             total_price=_to_float(row.get("line_total") or row.get("total_price")),
+            selections=[
+                OrderItemSelectionSchema.model_validate(selection)
+                for selection in (row.get("selections_json") or [])
+            ],
         )
         for row in rows
     ]
@@ -189,6 +262,10 @@ def _map_legacy_order_items(rows: list[dict]) -> list[OrderItemSchema]:
             quantity=int(row.get("quantity", 1)),
             unit_price=_to_float(row.get("unit_price")),
             total_price=_to_float(row.get("total_price")),
+            selections=[
+                OrderItemSelectionSchema.model_validate(selection)
+                for selection in (row.get("selections") or [])
+            ],
         )
         for row in rows
     ]
@@ -234,12 +311,20 @@ async def _fetch_order_events(order_id: str) -> list[OrderEventSchema]:
     ]
 
 
-def _build_order_response(row: dict, items: list[OrderItemSchema]) -> OrderResponseSchema:
+def _build_order_response(
+    row: dict,
+    items: list[OrderItemSchema],
+    *,
+    branch_name: str | None = None,
+) -> OrderResponseSchema:
     created_at = row.get("placed_at") or row.get("created_at") or _now_iso()
     return OrderResponseSchema(
         id=str(row["id"]),
         order_number=row.get("order_number"),
         tracking_code=row.get("tracking_code"),
+        tracking_url=_build_tracking_url(row),
+        branch_id=str(row["branch_id"]) if row.get("branch_id") else None,
+        branch_name=branch_name,
         customer_phone=str(row.get("customer_phone_snapshot") or row.get("customer_phone") or ""),
         customer_name=row.get("customer_name_snapshot") or row.get("customer_name"),
         delivery_address=str(
@@ -247,6 +332,7 @@ def _build_order_response(row: dict, items: list[OrderItemSchema]) -> OrderRespo
         ),
         items=items,
         subtotal_amount=_to_float(row.get("subtotal_amount") or row.get("total_amount")),
+        delivery_fee=_to_float(row.get("delivery_fee")),
         total_amount=_to_float(row.get("total_amount")),
         payment_method=PaymentMethod(str(row.get("payment_method") or PaymentMethod.cash.value)),
         payment_status=PaymentStatus(str(row.get("payment_status") or PaymentStatus.unpaid.value)),
@@ -254,6 +340,11 @@ def _build_order_response(row: dict, items: list[OrderItemSchema]) -> OrderRespo
         channel=str(row.get("channel") or "web"),
         fulfillment_type=str(row.get("fulfillment_type") or "delivery"),
         notes=row.get("notes"),
+        accepted_eta_minutes=(
+            int(row["accepted_eta_minutes"])
+            if row.get("accepted_eta_minutes") is not None
+            else None
+        ),
         created_at=datetime.fromisoformat(str(created_at)),
     )
 
@@ -278,6 +369,29 @@ async def _get_order_row_by_tracking_code(tracking_code: str) -> dict | None:
     if result.data:
         return result.data[0]
     return None
+
+
+async def _get_order_row_by_tracking_reference(reference: str) -> dict | None:
+    supabase = get_supabase()
+    try:
+        result = (
+            supabase.table("orders")
+            .select("*")
+            .eq("public_tracking_token", reference)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as exc:
+        if not _is_schema_compatibility_error(exc):
+            raise
+        logger.warning("Public tracking token lookup unavailable: %s", exc)
+        # Temporary compatibility for databases that have not yet applied the
+        # opaque-token migration. Once the column exists, short tracking codes
+        # are never accepted by the public endpoint.
+        return await _get_order_row_by_tracking_code(reference.upper())
 
 
 async def _get_order_row_by_order_number(order_number: str) -> dict | None:
@@ -374,9 +488,9 @@ async def _create_order_event(
     reason_code: str | None = None,
     reason_note: str | None = None,
     metadata_json: dict | None = None,
-) -> None:
+) -> str | None:
     supabase = get_supabase()
-    supabase.table("order_events").insert(
+    result = supabase.table("order_events").insert(
         {
             "tenant_id": order_row.get("tenant_id"),
             "branch_id": order_row.get("branch_id"),
@@ -392,6 +506,9 @@ async def _create_order_event(
             "created_at": _now_iso(),
         }
     ).execute()
+    if result.data:
+        return str(result.data[0]["id"])
+    return None
 
 
 async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
@@ -403,18 +520,65 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
     supabase = get_supabase()
     order_id = str(uuid.uuid4())
     now = _now_iso()
-    resolved_items = await _resolve_priced_items(data.items)
+    if not data.branch_id:
+        raise ValueError("Please select Ashesi University or Abelemkpe")
+    branch = await get_public_branch(data.branch_id)
+    if not branch:
+        raise ValueError("Selected branch was not found")
+    if branch and not branch.accepting_orders:
+        raise ValueError(f"{branch.name} is not accepting orders right now")
+
+    if data.idempotency_key:
+        try:
+            duplicate_result = (
+                supabase.table("orders")
+                .select("*")
+                .eq("branch_id", branch.id)
+                .eq("idempotency_key", data.idempotency_key)
+                .limit(1)
+                .execute()
+            )
+            if duplicate_result.data:
+                duplicate_row = duplicate_result.data[0]
+                duplicate_items = await _fetch_order_items(
+                    str(duplicate_row["id"]),
+                    duplicate_row.get("items"),
+                )
+                return _build_order_response(
+                    duplicate_row,
+                    duplicate_items,
+                    branch_name=branch.name,
+                )
+        except Exception as exc:
+            if not _is_schema_compatibility_error(exc):
+                raise
+            logger.warning("Order idempotency lookup unavailable: %s", exc)
+
+    resolved_items = await _resolve_priced_items(
+        data.items,
+        branch_id=branch.id,
+    )
     subtotal = round(sum(item.total_price for item in resolved_items), 2)
+    delivery_fee = round(branch.delivery_fee, 2)
+    if branch.minimum_order and subtotal < branch.minimum_order:
+        raise ValueError(
+            f"Minimum order for {branch.name} is GHS {branch.minimum_order:.2f}"
+        )
+    total = round(subtotal + delivery_fee, 2)
 
     order_row = {
         "id": order_id,
         "order_number": _build_order_number(),
         "tracking_code": _build_tracking_code(),
+        "public_tracking_token": _build_public_tracking_token(),
+        "idempotency_key": data.idempotency_key,
+        "whatsapp_consent": data.whatsapp_consent,
+        "tracking_expires_at": (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
         "customer_phone": data.customer_phone,
         "customer_name": data.customer_name,
         "delivery_address": data.delivery_address,
         "items": _build_legacy_items(resolved_items),
-        "total_amount": subtotal,
+        "total_amount": total,
         "payment_method": data.payment_method.value,
         "status": OrderStatus.new.value,
         "notes": data.notes,
@@ -422,7 +586,7 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
         "payment_status": _initial_payment_status(data.payment_method).value,
         "fulfillment_type": data.fulfillment_type.value,
         "subtotal_amount": subtotal,
-        "delivery_fee": 0,
+        "delivery_fee": delivery_fee,
         "discount_amount": 0,
         "currency": "GHS",
         "customer_name_snapshot": data.customer_name,
@@ -488,6 +652,31 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
         logger.error("Customer upsert failed for order %s: %s", order_id, exc)
 
     if not compatibility_mode:
+        try:
+            supabase.table("payments").insert(
+                {
+                    "order_id": order_id,
+                    "provider": (
+                        "cash"
+                        if data.payment_method == PaymentMethod.cash
+                        else "unconfigured_momo"
+                    ),
+                    "method": data.payment_method.value,
+                    "status": _initial_payment_status(data.payment_method).value,
+                    "amount": total,
+                    "currency": "GHS",
+                    "metadata_json": {"source": data.channel},
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            ).execute()
+        except Exception as exc:
+            if _is_schema_compatibility_error(exc):
+                logger.warning("Skipping payment record for legacy schema: %s", exc)
+            else:
+                raise
+
+    if not compatibility_mode:
         normalized_items = [
             {
                 "tenant_id": inserted_row.get("tenant_id"),
@@ -498,6 +687,9 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
                 "unit_price": item.unit_price,
                 "quantity": item.quantity,
                 "line_total": item.total_price,
+                "selections_json": [
+                    selection.model_dump() for selection in item.selections
+                ],
                 "created_at": now,
             }
             for item in resolved_items
@@ -512,9 +704,10 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
                 else:
                     raise
 
+    creation_event_id: str | None = None
     if not compatibility_mode:
         try:
-            await _create_order_event(
+            creation_event_id = await _create_order_event(
                 order_row=inserted_row,
                 event_type=STATUS_EVENT_TYPES[OrderStatus.new.value],
                 from_status=None,
@@ -529,11 +722,24 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
             else:
                 raise
 
-    order = _build_order_response(inserted_row, resolved_items)
+    order = _build_order_response(
+        inserted_row,
+        resolved_items,
+        branch_name=branch.name if branch else None,
+    )
 
     try:
-        await send_order_receipt_to_customer(order)
+        if creation_event_id:
+            from app.services.notification_service import notify_order_created
+
+            order.whatsapp_receipt_sent = await notify_order_created(
+                order,
+                order_event_id=creation_event_id,
+            )
+        else:
+            order.whatsapp_receipt_sent = await send_order_receipt_to_customer(order)
     except Exception as exc:
+        order.whatsapp_receipt_sent = False
         logger.error("Receipt send failed for order %s: %s", order_id, exc)
 
     try:
@@ -551,7 +757,12 @@ async def get_order(order_id: str) -> OrderResponseSchema | None:
         return None
 
     items = await _fetch_order_items(order_id, row.get("items"))
-    return _build_order_response(row, items)
+    branch = await get_public_branch(str(row["branch_id"])) if row.get("branch_id") else None
+    return _build_order_response(
+        row,
+        items,
+        branch_name=branch.name if branch else None,
+    )
 
 
 async def get_order_detail(order_id: str) -> AdminOrderDetailSchema | None:
@@ -561,11 +772,15 @@ async def get_order_detail(order_id: str) -> AdminOrderDetailSchema | None:
 
     items = await _fetch_order_items(order_id, row.get("items"))
     events = await _fetch_order_events(order_id)
-    order = _build_order_response(row, items)
+    branch = await get_public_branch(str(row["branch_id"])) if row.get("branch_id") else None
+    order = _build_order_response(
+        row,
+        items,
+        branch_name=branch.name if branch else None,
+    )
 
     return AdminOrderDetailSchema(
         **order.model_dump(),
-        branch_id=row.get("branch_id"),
         tenant_id=row.get("tenant_id"),
         customer_id=row.get("customer_id"),
         allowed_next_statuses=get_allowed_next_statuses(order.status),
@@ -619,6 +834,7 @@ async def update_order_status(
     actor_label: str | None = None,
     reason_code: str | None = None,
     reason_note: str | None = None,
+    eta_minutes: int | None = None,
 ) -> AdminOrderDetailSchema | None:
     """Update an order status after validating the transition."""
     supabase = get_supabase()
@@ -636,6 +852,13 @@ async def update_order_status(
         raise ValueError(
             f"Invalid status transition: {current_status.value} -> {target_status.value}"
         )
+    if target_status in {
+        OrderStatus.rejected,
+        OrderStatus.cancel_requested,
+        OrderStatus.cancelled,
+        OrderStatus.delayed,
+    } and not reason_code:
+        raise ValueError(f"A reason is required for {target_status.value}")
 
     now = _now_iso()
     update_data: dict[str, object] = {
@@ -644,8 +867,12 @@ async def update_order_status(
     }
     if target_status == OrderStatus.confirmed:
         update_data["confirmed_at"] = now
+        if eta_minutes is not None:
+            update_data["accepted_eta_minutes"] = eta_minutes
     if target_status == OrderStatus.delivered:
         update_data["delivered_at"] = now
+    if target_status == OrderStatus.out_for_delivery:
+        update_data["dispatched_at"] = now
     if target_status == OrderStatus.cancelled:
         update_data["cancelled_at"] = now
 
@@ -653,13 +880,16 @@ async def update_order_status(
         supabase.table("orders")
         .update(update_data)
         .eq("id", order_id)
+        .eq("status", row.get("status"))
         .execute()
     )
     if not result.data:
-        return None
+        raise ValueError(
+            "This order changed on another staff screen. Refresh before trying again."
+        )
 
     updated_row = result.data[0]
-    await _create_order_event(
+    order_event_id = await _create_order_event(
         order_row=updated_row,
         event_type=STATUS_EVENT_TYPES[target_status.value],
         from_status=current_status.value,
@@ -671,7 +901,22 @@ async def update_order_status(
         metadata_json={"source": "admin"},
     )
 
-    return await get_order_detail(order_id)
+    order = await get_order_detail(order_id)
+    if order:
+        try:
+            from app.services.notification_service import notify_order_status_changed
+
+            await notify_order_status_changed(
+                order,
+                order_event_id=order_event_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Status notification failed for order %s: %s",
+                order_id,
+                exc,
+            )
+    return order
 
 
 async def cancel_order(order_id: str, payload: CancelOrderSchema) -> AdminOrderDetailSchema | None:
@@ -697,10 +942,73 @@ async def cancel_order(order_id: str, payload: CancelOrderSchema) -> AdminOrderD
     )
 
 
-async def get_order_tracking(tracking_code: str) -> OrderTrackingResponseSchema | None:
-    row = await _get_order_row_by_tracking_code(tracking_code)
+async def update_order_payment(
+    order_id: str,
+    payload: UpdatePaymentSchema,
+    *,
+    actor_label: str,
+) -> AdminOrderDetailSchema | None:
+    supabase = get_supabase()
+    row = await _get_order_row_by_id(order_id)
     if not row:
         return None
+
+    if (
+        str(row.get("payment_method") or "") == PaymentMethod.momo.value
+        and payload.status == PaymentStatus.paid
+        and payload.provider == "manual"
+        and not payload.provider_reference
+    ):
+        raise ValueError("A Mobile Money reference is required before marking paid")
+
+    result = (
+        supabase.table("orders")
+        .update({"payment_status": payload.status.value, "updated_at": _now_iso()})
+        .eq("id", order_id)
+        .eq("payment_status", row.get("payment_status"))
+        .execute()
+    )
+    if not result.data:
+        raise ValueError("Payment state changed elsewhere. Refresh and try again.")
+
+    supabase.table("payments").insert(
+        {
+            "order_id": order_id,
+            "provider": payload.provider,
+            "provider_reference": payload.provider_reference,
+            "method": str(row.get("payment_method") or PaymentMethod.cash.value),
+            "status": payload.status.value,
+            "amount": _to_float(row.get("total_amount")),
+            "currency": str(row.get("currency") or "GHS"),
+            "metadata_json": {"actor": actor_label},
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }
+    ).execute()
+
+    await _create_order_event(
+        order_row=result.data[0],
+        event_type="payment_updated",
+        from_status=_normalize_status(row.get("status")).value,
+        to_status=_normalize_status(row.get("status")).value,
+        actor_type="staff",
+        actor_label=actor_label,
+        metadata_json={
+            "payment_status": payload.status.value,
+            "provider": payload.provider,
+        },
+    )
+    return await get_order_detail(order_id)
+
+
+async def get_order_tracking(tracking_reference: str) -> OrderTrackingResponseSchema | None:
+    row = await _get_order_row_by_tracking_reference(tracking_reference)
+    if not row:
+        return None
+    if row.get("tracking_expires_at"):
+        expires_at = datetime.fromisoformat(str(row["tracking_expires_at"]))
+        if expires_at <= datetime.now(timezone.utc):
+            return None
 
     events = await _fetch_order_events(str(row["id"]))
     if not events:
@@ -728,6 +1036,9 @@ async def get_order_tracking(tracking_code: str) -> OrderTrackingResponseSchema 
         for event in events
     ]
 
+    items = await _fetch_order_items(str(row["id"]), row.get("items"))
+    branch = await get_public_branch(str(row["branch_id"])) if row.get("branch_id") else None
+
     return OrderTrackingResponseSchema(
         tracking_code=str(row["tracking_code"]),
         order_number=row.get("order_number"),
@@ -735,5 +1046,61 @@ async def get_order_tracking(tracking_code: str) -> OrderTrackingResponseSchema 
         status_label=get_status_label(row.get("status")),
         placed_at=datetime.fromisoformat(str(row.get("placed_at") or row.get("created_at"))),
         customer_name=row.get("customer_name_snapshot") or row.get("customer_name"),
+        branch_name=branch.name if branch else None,
+        branch_slug=branch.slug if branch else None,
+        branch_phone=branch.phone if branch else None,
+        eta_min_minutes=branch.eta_min_minutes if branch else None,
+        eta_max_minutes=branch.eta_max_minutes if branch else None,
+        accepted_eta_minutes=(
+            int(row["accepted_eta_minutes"])
+            if row.get("accepted_eta_minutes") is not None
+            else None
+        ),
+        items=items,
+        subtotal_amount=_to_float(row.get("subtotal_amount") or row.get("total_amount")),
+        delivery_fee=_to_float(row.get("delivery_fee")),
+        total_amount=_to_float(row.get("total_amount")),
+        payment_status=PaymentStatus(
+            str(row.get("payment_status") or PaymentStatus.unpaid.value)
+        ),
         timeline=timeline,
     )
+
+
+async def submit_order_feedback(
+    tracking_reference: str,
+    feedback: OrderFeedbackSchema,
+) -> bool:
+    row = await _get_order_row_by_tracking_reference(tracking_reference)
+    if not row:
+        raise ValueError("Tracking link not found")
+    if _normalize_status(row.get("status")) != OrderStatus.delivered:
+        raise ValueError("Feedback is available after delivery")
+
+    supabase = get_supabase()
+    existing = (
+        supabase.table("order_feedback")
+        .select("*")
+        .eq("order_id", row["id"])
+        .limit(1)
+        .execute()
+    )
+    payload = {
+        "rating": feedback.rating,
+        "comment": feedback.comment,
+        "updated_at": _now_iso(),
+    }
+    if existing.data:
+        result = (
+            supabase.table("order_feedback")
+            .update(payload)
+            .eq("id", existing.data[0]["id"])
+            .execute()
+        )
+    else:
+        result = (
+            supabase.table("order_feedback")
+            .insert({"order_id": row["id"], **payload, "created_at": _now_iso()})
+            .execute()
+        )
+    return bool(result.data)

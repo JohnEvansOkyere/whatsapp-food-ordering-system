@@ -5,6 +5,9 @@ Both `/webhook/*` and `/webhooks/*` remain available during the route-family
 cutover so existing provider configuration does not break.
 """
 
+import hashlib
+import hmac
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -13,6 +16,7 @@ from app.config import get_settings
 from app.services import session_store as store
 from app.services.groq_service import handle_incoming_message
 from app.services.whatsapp import send_text_message
+from app.services.logging_utils import mask_phone
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["webhooks"])
@@ -46,8 +50,19 @@ async def verify_webhook(
 @router.post("/webhook/whatsapp")
 @router.post("/webhooks/whatsapp")
 async def receive_message(request: Request):
+    raw_body = await request.body()
+    settings = get_settings()
+    if settings.meta_app_secret:
+        supplied_signature = request.headers.get("x-hub-signature-256", "")
+        expected_signature = "sha256=" + hmac.new(
+            settings.meta_app_secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            raise HTTPException(status_code=403, detail="Invalid webhook signature")
     try:
-        body = await request.json()
+        body = json.loads(raw_body)
     except Exception:
         return {"status": "invalid_json"}
 
@@ -64,7 +79,11 @@ async def receive_message(request: Request):
         msg_type: str = message.get("type", "")
 
         if message_id and store.has_processed_message(message_id):
-            logger.info("Ignoring duplicate WhatsApp message id=%s from %s", message_id, sender)
+            logger.info(
+                "Ignoring duplicate WhatsApp message id=%s from %s",
+                message_id,
+                mask_phone(sender),
+            )
             return {"status": "duplicate_ignored"}
 
         branch_id: str | None = None
@@ -92,7 +111,7 @@ async def receive_message(request: Request):
             if message_id:
                 store.mark_message_processed(message_id)
         else:
-            logger.debug("Ignored message type '%s' from %s", msg_type, sender)
+            logger.debug("Ignored message type '%s' from %s", msg_type, mask_phone(sender))
     except (KeyError, IndexError) as exc:
         logger.warning("Webhook payload parse warning: %s", exc)
     except Exception as exc:

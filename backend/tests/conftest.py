@@ -18,6 +18,7 @@ os.environ.setdefault("GROQ_API_KEY", "groq-test")
 os.environ.setdefault("OPENAI_API_KEY", "openai-test")
 os.environ.setdefault("GEMINI_API_KEY", "gemini-test")
 os.environ.setdefault("OWNER_WHATSAPP", "233000000000")
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 from app.config import get_settings  # noqa: E402
 

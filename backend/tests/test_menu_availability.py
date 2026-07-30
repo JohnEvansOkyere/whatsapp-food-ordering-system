@@ -55,6 +55,7 @@ class FakeQuery:
         self.supabase = supabase
         self.table_name = table_name
         self.filters = []
+        self.insert_payload = None
         self.update_payload = None
 
     def select(self, _fields="*"):
@@ -64,12 +65,22 @@ class FakeQuery:
         self.update_payload = payload
         return self
 
+    def insert(self, payload):
+        self.insert_payload = payload
+        return self
+
     def eq(self, field, value):
         self.filters.append((field, value))
         return self
 
     def execute(self):
         table = self.supabase.tables[self.table_name]
+
+        if self.insert_payload is not None:
+            row = copy.deepcopy(self.insert_payload)
+            row.setdefault("id", f"override-{len(table) + 1}")
+            table.append(row)
+            return FakeResponse([copy.deepcopy(row)])
 
         if self.update_payload is not None:
             updated = []
@@ -89,7 +100,10 @@ class FakeQuery:
 
 class FakeSupabase:
     def __init__(self):
-        self.tables = {"menu_items": copy.deepcopy(MENU_ROWS)}
+        self.tables = {
+            "menu_items": copy.deepcopy(MENU_ROWS),
+            "branch_menu_overrides": [],
+        }
 
     def table(self, table_name):
         return FakeQuery(self, table_name)
@@ -104,23 +118,41 @@ def api_request(app, method, url, **kwargs):
     return asyncio.run(_request())
 
 
+def staff_headers(app, username="owner"):
+    response = api_request(
+        app,
+        "POST",
+        "/auth/staff/login",
+        json={"username": username, "password": "ChangeMe123!"},
+    )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
 @pytest.fixture(autouse=True)
 def clear_sessions():
     store._store.clear()
     store._processed_message_ids.clear()
 
 
-def test_sold_out_item_is_removed_from_public_menu_and_can_be_toggled(app, monkeypatch):
+def test_sold_out_item_is_visible_but_flagged_and_can_be_toggled(app, monkeypatch):
+    branch_id = "a5010000-0000-4000-8000-000000000001"
+    headers = staff_headers(app)
     fake_supabase = FakeSupabase()
     monkeypatch.setattr(menu_service, "get_supabase", lambda: fake_supabase)
 
-    public_menu = api_request(app, "GET", "/public/menu")
+    public_menu = api_request(app, "GET", f"/public/menu?branch_id={branch_id}")
     assert public_menu.status_code == 200
-    public_ids = {item["id"] for item in public_menu.json()["items"]}
-    assert "waakye" not in public_ids
-    assert "fried-rice-chicken" in public_ids
+    public_items = {item["id"]: item for item in public_menu.json()["items"]}
+    assert public_items["waakye"]["sold_out"] is True
+    assert public_items["fried-rice-chicken"]["sold_out"] is False
 
-    admin_menu = api_request(app, "GET", "/admin/menu")
+    admin_menu = api_request(
+        app,
+        "GET",
+        f"/admin/menu?branch_id={branch_id}",
+        headers=headers,
+    )
     assert admin_menu.status_code == 200
     admin_items = {item["id"]: item for item in admin_menu.json()["items"]}
     assert admin_items["waakye"]["sold_out"] is True
@@ -128,16 +160,19 @@ def test_sold_out_item_is_removed_from_public_menu_and_can_be_toggled(app, monke
     toggle = api_request(
         app,
         "PATCH",
-        "/admin/menu/waakye",
+        f"/admin/menu/waakye?branch_id={branch_id}",
+        headers=headers,
         json={"sold_out": False},
     )
     assert toggle.status_code == 200
     assert toggle.json()["sold_out"] is False
 
-    public_menu_after = api_request(app, "GET", "/public/menu")
+    public_menu_after = api_request(app, "GET", f"/public/menu?branch_id={branch_id}")
     assert public_menu_after.status_code == 200
-    public_ids_after = {item["id"] for item in public_menu_after.json()["items"]}
-    assert "waakye" in public_ids_after
+    public_items_after = {
+        item["id"]: item for item in public_menu_after.json()["items"]
+    }
+    assert public_items_after["waakye"]["sold_out"] is False
 
 
 def test_whatsapp_agent_reports_sold_out_and_offers_alternatives(monkeypatch):

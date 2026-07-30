@@ -1,35 +1,112 @@
-import { useState, useCallback } from 'react'
-import { MenuItem } from '../../lib/menuData'
+import { useState, useCallback, useEffect } from 'react'
+import { MenuItem, SelectedOption } from '../lib/menuData'
 
 export interface CartItem extends MenuItem {
+  cartKey: string
+  selectedOptions: SelectedOption[]
   quantity: number
 }
 
 export function useCart() {
   const [items, setItems] = useState<CartItem[]>([])
   const [isOpen, setIsOpen] = useState(false)
+  const [hydrated, setHydrated] = useState(false)
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem('restaurant-cart-v1')
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed)) {
+          setItems(
+            parsed.map(item => ({
+              ...item,
+              cartKey: item.cartKey || item.id,
+              selectedOptions: Array.isArray(item.selectedOptions)
+                ? item.selectedOptions
+                : [],
+            }))
+          )
+        }
+      }
+    } catch {
+      window.localStorage.removeItem('restaurant-cart-v1')
+    } finally {
+      setHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
+    window.localStorage.setItem('restaurant-cart-v1', JSON.stringify(items))
+  }, [hydrated, items])
 
   const addItem = useCallback((item: MenuItem) => {
     setItems(prev => {
-      const existing = prev.find(i => i.id === item.id)
+      const incoming = item as CartItem
+      const cartKey = incoming.cartKey || item.id
+      const existing = prev.find(i => i.cartKey === cartKey)
       if (existing) {
         return prev.map(i =>
-          i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i
+          i.cartKey === cartKey ? { ...i, quantity: i.quantity + 1 } : i
         )
       }
-      return [...prev, { ...item, quantity: 1 }]
+      return [
+        ...prev,
+        {
+          ...item,
+          cartKey,
+          selectedOptions: incoming.selectedOptions || [],
+          quantity: 1,
+        },
+      ]
     })
   }, [])
 
-  const removeItem = useCallback((id: string) => {
+  const addConfiguredItem = useCallback(
+    (item: MenuItem, selectedOptions: SelectedOption[]) => {
+      const signature = selectedOptions
+        .map(option => `${option.groupId}:${option.optionId}`)
+        .sort()
+        .join('|')
+      const optionsPrice = selectedOptions.reduce(
+        (sum, option) => sum + option.price,
+        0
+      )
+      addItem({
+        ...item,
+        price: item.price + optionsPrice,
+        cartKey: `${item.id}::${signature || 'base'}`,
+        selectedOptions,
+      } as CartItem)
+    },
+    [addItem]
+  )
+
+  const removeItem = useCallback((cartKey: string) => {
     setItems(prev => {
-      const existing = prev.find(i => i.id === id)
+      const existing = prev.find(i => i.cartKey === cartKey)
       if (existing && existing.quantity > 1) {
         return prev.map(i =>
-          i.id === id ? { ...i, quantity: i.quantity - 1 } : i
+          i.cartKey === cartKey ? { ...i, quantity: i.quantity - 1 } : i
         )
       }
-      return prev.filter(i => i.id !== id)
+      return prev.filter(i => i.cartKey !== cartKey)
+    })
+  }, [])
+
+  const removeOneByItemId = useCallback((id: string) => {
+    setItems(prev => {
+      const existing = prev.find(item => item.id === id)
+      if (!existing) return prev
+      if (existing.quantity > 1) {
+        return prev.map(item =>
+          item.cartKey === existing.cartKey
+            ? { ...item, quantity: item.quantity - 1 }
+            : item
+        )
+      }
+      return prev.filter(item => item.cartKey !== existing.cartKey)
     })
   }, [])
 
@@ -48,12 +125,15 @@ export function useCart() {
   return {
     items,
     addItem,
+    addConfiguredItem,
     removeItem,
+    removeOneByItemId,
     clearCart,
     getQuantity,
     totalItems,
     totalPrice,
     isOpen,
     setIsOpen,
+    hydrated,
   }
 }

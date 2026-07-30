@@ -113,8 +113,17 @@ OWNER_WHATSAPP=233XXXXXXXXX
 
 ---
 
+## Planning
+
+- Production architecture and execution tracker: [docs/PRODUCTION_ARCHITECTURE_PLAN.md](/home/grejoy/Projects/whastapp-food-ordering/docs/PRODUCTION_ARCHITECTURE_PLAN.md)
+
+---
+
 ## Business Model
 
 - Free for 1 month (trial)
 - GHS 400–600/month after trial
 - Setup fee: GHS 200 (optional)
+
+
+codex resume 019dce48-547d-7831-9671-ff30e9a40601

@@ -11,6 +11,81 @@ from app.database import get_supabase
 
 logger = logging.getLogger(__name__)
 
+MENU_OPTION_GROUPS: dict[str, list[dict[str, Any]]] = {
+    "jollof-chicken": [
+        {
+            "id": "extras",
+            "name": "Add something extra",
+            "type": "multiple",
+            "max_selections": 2,
+            "options": [
+                {"id": "plantain", "name": "Fried plantain", "price": 8},
+                {"id": "coleslaw", "name": "Extra coleslaw", "price": 5},
+            ],
+        }
+    ],
+    "fried-rice-chicken": [
+        {
+            "id": "extras",
+            "name": "Add something extra",
+            "type": "multiple",
+            "max_selections": 2,
+            "options": [
+                {"id": "plantain", "name": "Fried plantain", "price": 8},
+                {"id": "coleslaw", "name": "Extra coleslaw", "price": 5},
+            ],
+        }
+    ],
+    "pepperoni-pizza": [
+        {
+            "id": "size",
+            "name": "Choose a size",
+            "type": "single",
+            "options": [
+                {"id": "regular", "name": "Regular 10-inch", "price": 0},
+                {"id": "large", "name": "Large 12-inch", "price": 25},
+            ],
+        },
+        {
+            "id": "extras",
+            "name": "Pizza extras",
+            "type": "multiple",
+            "max_selections": 2,
+            "options": [
+                {"id": "cheese", "name": "Extra cheese", "price": 12},
+                {"id": "chicken", "name": "Extra chicken", "price": 15},
+            ],
+        },
+    ],
+    "chicken-pizza": [
+        {
+            "id": "size",
+            "name": "Choose a size",
+            "type": "single",
+            "options": [
+                {"id": "regular", "name": "Regular 10-inch", "price": 0},
+                {"id": "large", "name": "Large 12-inch", "price": 25},
+            ],
+        },
+        {
+            "id": "extras",
+            "name": "Pizza extras",
+            "type": "multiple",
+            "max_selections": 2,
+            "options": [
+                {"id": "cheese", "name": "Extra cheese", "price": 12},
+                {"id": "chicken", "name": "Extra chicken", "price": 15},
+            ],
+        },
+    ],
+}
+
+
+def _with_options(row: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(row)
+    enriched["option_groups"] = MENU_OPTION_GROUPS.get(str(row.get("id")), [])
+    return enriched
+
 # Static fallback — keep in sync with frontend/src/lib/menuData.ts
 STATIC_MENU_ITEMS: list[dict[str, Any]] = [
     {
@@ -192,24 +267,69 @@ async def fetch_menu_items(
     *,
     include_inactive: bool = False,
     include_sold_out: bool = False,
+    branch_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Menu items for ordering, public menu, and admin availability views."""
     try:
         supabase = get_supabase()
         result = supabase.table("menu_items").select("*").execute()
         if result.data:
-            return _filter_menu_rows(
-                list(result.data),
+            rows = list(result.data)
+            if branch_id:
+                rows = [
+                    row
+                    for row in rows
+                    if not row.get("branch_id")
+                    or str(row.get("branch_id")) == branch_id
+                ]
+                try:
+                    override_result = (
+                        supabase.table("branch_menu_overrides")
+                        .select("*")
+                        .eq("branch_id", branch_id)
+                        .execute()
+                    )
+                    overrides = {
+                        str(row["menu_item_id"]): row
+                        for row in (override_result.data or [])
+                    }
+                    merged_rows: list[dict[str, Any]] = []
+                    for row in rows:
+                        merged = dict(row)
+                        override = overrides.get(str(row.get("id")))
+                        if override:
+                            if override.get("price_override") is not None:
+                                merged["price"] = float(override["price_override"])
+                            merged["sold_out"] = bool(override.get("sold_out", False))
+                            merged["active"] = bool(override.get("active", True))
+                            merged["branch_override"] = True
+                        merged_rows.append(merged)
+                    rows = merged_rows
+                except Exception as exc:
+                    logger.warning("Branch menu overrides unavailable: %s", exc)
+            return [
+                _with_options(row)
+                for row in _filter_menu_rows(
+                rows,
                 include_inactive=include_inactive,
                 include_sold_out=include_sold_out,
-            )
+                )
+            ]
     except Exception as e:
         logger.warning(f"Supabase menu fetch failed, using static fallback: {e}")
-    return _filter_menu_rows(
+    rows = _filter_menu_rows(
         [dict(item) for item in STATIC_MENU_ITEMS],
         include_inactive=include_inactive,
         include_sold_out=include_sold_out,
     )
+    if branch_id:
+        rows = [
+            row
+            for row in rows
+            if not row.get("branch_id")
+            or str(row.get("branch_id")) == branch_id
+        ]
+    return [_with_options(row) for row in rows]
 
 
 async def update_menu_item_availability(
@@ -217,6 +337,7 @@ async def update_menu_item_availability(
     *,
     sold_out: bool | None = None,
     active: bool | None = None,
+    branch_id: str | None = None,
 ) -> dict[str, Any] | None:
     update_payload: dict[str, Any] = {}
     if sold_out is not None:
@@ -227,6 +348,47 @@ async def update_menu_item_availability(
         return None
 
     supabase = get_supabase()
+    if branch_id:
+        existing = (
+            supabase.table("branch_menu_overrides")
+            .select("*")
+            .eq("branch_id", branch_id)
+            .eq("menu_item_id", item_id)
+            .execute()
+        )
+        if existing.data:
+            result = (
+                supabase.table("branch_menu_overrides")
+                .update(update_payload)
+                .eq("id", existing.data[0]["id"])
+                .execute()
+            )
+        else:
+            result = (
+                supabase.table("branch_menu_overrides")
+                .insert(
+                    {
+                        "branch_id": branch_id,
+                        "menu_item_id": item_id,
+                        "sold_out": bool(sold_out) if sold_out is not None else False,
+                        "active": bool(active) if active is not None else True,
+                    }
+                )
+                .execute()
+            )
+        if result.data:
+            matching = [
+                item
+                for item in await fetch_menu_items(
+                    include_inactive=True,
+                    include_sold_out=True,
+                    branch_id=branch_id,
+                )
+                if str(item.get("id")) == item_id
+            ]
+            return matching[0] if matching else dict(result.data[0])
+        return None
+
     result = (
         supabase.table("menu_items")
         .update(update_payload)

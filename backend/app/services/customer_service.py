@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.database import get_supabase
+from app.services.logging_utils import mask_phone
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ async def get_customer(phone: str) -> dict | None:
             return result.data[0]
         return None
     except Exception as exc:
-        logger.error("Customer lookup failed for %s: %s", phone, exc)
+        logger.error("Customer lookup failed for %s: %s", mask_phone(phone), exc)
         return None
 
 
@@ -90,7 +91,7 @@ async def get_last_order(phone: str) -> dict | None:
             return result.data[0]
         return None
     except Exception as exc:
-        logger.error("Last order lookup failed for %s: %s", phone, exc)
+        logger.error("Last order lookup failed for %s: %s", mask_phone(phone), exc)
         return None
 
 
@@ -121,7 +122,11 @@ async def get_latest_order_status(phone: str) -> dict | None:
             return result.data[0]
         return None
     except Exception as exc:
-        logger.error("Latest order status lookup failed for %s: %s", phone, exc)
+        logger.error(
+            "Latest order status lookup failed for %s: %s",
+            mask_phone(phone),
+            exc,
+        )
         return None
 
 
@@ -176,7 +181,7 @@ async def upsert_customer(
             return result.data[0]
         return await get_customer(phone)
     except Exception as exc:
-        logger.error("Customer upsert failed for %s: %s", phone, exc)
+        logger.error("Customer upsert failed for %s: %s", mask_phone(phone), exc)
         return None
 
 

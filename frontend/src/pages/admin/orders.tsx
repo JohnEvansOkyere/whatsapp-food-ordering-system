@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Head from 'next/head'
 import { AlertCircle, Clock3, PackageCheck, RefreshCw, ShoppingBag, Truck } from 'lucide-react'
+import { getStaffSession, staffFetch } from '@/lib/staffAuth'
 
 type OrderStatus =
   | 'new'
@@ -8,6 +9,7 @@ type OrderStatus =
   | 'preparing'
   | 'ready'
   | 'out_for_delivery'
+  | 'delayed'
   | 'delivered'
   | 'cancel_requested'
   | 'cancelled'
@@ -33,6 +35,7 @@ interface OrderItem {
   quantity: number
   unit_price: number
   total_price: number
+  selections?: Array<{ name?: string | null; option_id: string }>
 }
 
 interface OrderEvent {
@@ -67,6 +70,7 @@ const STATUS_OPTIONS: Array<{ value: '' | OrderStatus; label: string }> = [
   { value: 'preparing', label: 'Preparing' },
   { value: 'ready', label: 'Ready' },
   { value: 'out_for_delivery', label: 'Out for delivery' },
+  { value: 'delayed', label: 'Delayed' },
   { value: 'delivered', label: 'Delivered' },
   { value: 'cancel_requested', label: 'Cancel requested' },
   { value: 'cancelled', label: 'Cancelled' },
@@ -113,6 +117,8 @@ function statusTone(status: string) {
       return 'bg-emerald-100 text-emerald-800'
     case 'out_for_delivery':
       return 'bg-sky-100 text-sky-800'
+    case 'delayed':
+      return 'bg-rose-100 text-rose-800'
     case 'delivered':
       return 'bg-green-100 text-green-800'
     case 'cancel_requested':
@@ -143,6 +149,10 @@ export default function AdminOrdersPage() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
   const fetchOrders = async () => {
+    if (!getStaffSession()) {
+      window.location.assign('/admin/login')
+      return
+    }
     setLoadingList(true)
     setError('')
 
@@ -151,7 +161,7 @@ export default function AdminOrdersPage() {
       if (statusFilter) params.set('status', statusFilter)
       if (branchFilter.trim()) params.set('branch_id', branchFilter.trim())
       const query = params.toString()
-      const res = await fetch(`${apiUrl}/admin/orders${query ? `?${query}` : ''}`)
+      const res = await staffFetch(`${apiUrl}/admin/orders${query ? `?${query}` : ''}`)
       if (!res.ok) {
         throw new Error('Failed to load orders')
       }
@@ -182,7 +192,7 @@ export default function AdminOrdersPage() {
     setLoadingDetail(true)
     setDetailError('')
     try {
-      const res = await fetch(`${apiUrl}/admin/orders/${orderId}`)
+      const res = await staffFetch(`${apiUrl}/admin/orders/${orderId}`)
       if (!res.ok) {
         throw new Error('Failed to load order details')
       }
@@ -241,9 +251,9 @@ export default function AdminOrdersPage() {
   const summary = useMemo(() => {
     return {
       total: orders.length,
-      active: orders.filter(order => ['new', 'confirmed', 'preparing', 'ready', 'out_for_delivery'].includes(order.status)).length,
+      active: orders.filter(order => ['new', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delayed'].includes(order.status)).length,
       delivery: orders.filter(order => order.status === 'out_for_delivery').length,
-      exceptions: orders.filter(order => ['cancel_requested', 'cancelled', 'rejected'].includes(order.status)).length,
+      exceptions: orders.filter(order => ['delayed', 'cancel_requested', 'cancelled', 'rejected'].includes(order.status)).length,
     }
   }, [orders])
 
@@ -253,7 +263,7 @@ export default function AdminOrdersPage() {
     setMutating(true)
     setDetailError('')
     try {
-      const res = await fetch(`${apiUrl}/admin/orders/${selectedOrder.id}/status`, {
+      const res = await staffFetch(`${apiUrl}/admin/orders/${selectedOrder.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -282,7 +292,7 @@ export default function AdminOrdersPage() {
     setMutating(true)
     setDetailError('')
     try {
-      const res = await fetch(`${apiUrl}/admin/orders/${selectedOrder.id}/cancel`, {
+      const res = await staffFetch(`${apiUrl}/admin/orders/${selectedOrder.id}/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -557,6 +567,13 @@ export default function AdminOrdersPage() {
                               <p className="font-bold">
                                 {item.quantity}x {item.name}
                               </p>
+                              {item.selections && item.selections.length > 0 && (
+                                <p className="mt-1 text-xs text-gray-500">
+                                  {item.selections
+                                    .map(selection => selection.name || selection.option_id)
+                                    .join(', ')}
+                                </p>
+                              )}
                               <p className="text-sm text-gray-500">
                                 {formatMoney(item.unit_price)} each
                               </p>

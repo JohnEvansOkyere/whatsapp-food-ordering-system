@@ -1,0 +1,17 @@
+{
+  "name": "Accra Eats Ordering",
+  "short_name": "Accra Eats",
+  "description": "Order fresh food from Ashesi University or Abelemkpe and track every step.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fffaf4",
+  "theme_color": "#1a0a00",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

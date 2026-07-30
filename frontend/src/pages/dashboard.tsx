@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Head from 'next/head'
 import Link from 'next/link'
 import {
   Bike,
+  BellRing,
   CheckCircle2,
   ChefHat,
   MapPin,
@@ -16,6 +17,8 @@ import {
   Truck,
 } from 'lucide-react'
 import { MENU_ITEMS, RESTAURANT } from '@/lib/menuData'
+import { clearStaffSession, getStaffSession, staffFetch } from '@/lib/staffAuth'
+import { Branch, FALLBACK_BRANCHES } from '@/lib/branches'
 
 type OrderStatus =
   | 'new'
@@ -23,6 +26,7 @@ type OrderStatus =
   | 'preparing'
   | 'ready'
   | 'out_for_delivery'
+  | 'delayed'
   | 'delivered'
   | 'cancel_requested'
   | 'cancelled'
@@ -34,6 +38,7 @@ interface OrderItem {
   quantity: number
   unit_price: number
   total_price: number
+  selections?: Array<{ name?: string | null; option_id: string }>
 }
 
 interface OrderEvent {
@@ -58,6 +63,7 @@ interface OrderDetail {
   branch_id?: string | null
   status: OrderStatus
   payment_status: string
+  payment_method?: 'momo' | 'cash'
   total_amount: number
   subtotal_amount: number
   channel: string
@@ -88,6 +94,7 @@ const KANBAN_STATUSES: Array<{ value: OrderStatus; label: string; accent: string
   { value: 'preparing', label: 'Cooking', accent: 'border-orange-300 bg-orange-50' },
   { value: 'ready', label: 'Ready', accent: 'border-emerald-300 bg-emerald-50' },
   { value: 'out_for_delivery', label: 'On The Road', accent: 'border-blue-300 bg-blue-50' },
+  { value: 'delayed', label: 'Delayed', accent: 'border-rose-300 bg-rose-50' },
   { value: 'delivered', label: 'Completed', accent: 'border-lime-300 bg-lime-50' },
 ]
 
@@ -97,6 +104,7 @@ const STATUS_PROGRESS: Record<OrderStatus, number> = {
   preparing: 3,
   ready: 4,
   out_for_delivery: 5,
+  delayed: 3,
   delivered: 6,
   cancel_requested: 2,
   cancelled: 2,
@@ -481,6 +489,8 @@ function displayStatus(status: OrderStatus) {
       return 'Ready'
     case 'out_for_delivery':
       return 'On the road'
+    case 'delayed':
+      return 'Delayed'
     case 'delivered':
       return 'Completed'
     case 'cancel_requested':
@@ -506,6 +516,8 @@ function displayEvent(eventType: string) {
       return 'Order ready'
     case 'order_dispatched':
       return 'Rider left with order'
+    case 'order_delayed':
+      return 'Order delayed'
     case 'order_delivered':
       return 'Order completed'
     case 'cancellation_requested':
@@ -549,6 +561,13 @@ function formatTimeSince(value: string) {
   return mins === 0 ? `${hours}h ago` : `${hours}h ${mins}m ago`
 }
 
+function needsAcceptanceAlert(order: OrderDetail) {
+  return (
+    order.status === 'new' &&
+    Date.now() - new Date(order.created_at).getTime() > 5 * 60 * 1000
+  )
+}
+
 function channelLabel(channel: string) {
   if (channel === 'whatsapp') return 'WhatsApp'
   if (channel === 'web') return 'Web'
@@ -590,6 +609,8 @@ function statusBadge(status: OrderStatus) {
       return 'bg-emerald-100 text-emerald-800'
     case 'out_for_delivery':
       return 'bg-blue-100 text-blue-800'
+    case 'delayed':
+      return 'bg-rose-100 text-rose-800'
     case 'delivered':
       return 'bg-lime-100 text-lime-800'
     case 'cancel_requested':
@@ -604,19 +625,53 @@ function statusBadge(status: OrderStatus) {
 
 export default function DashboardPage() {
   const [orders, setOrders] = useState<OrderDetail[]>([])
-  const [menuAvailability, setMenuAvailability] = useState<MenuAvailabilityItem[]>(buildDemoMenuAvailability())
+  const [menuAvailability, setMenuAvailability] = useState<MenuAvailabilityItem[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(false)
   const [mutating, setMutating] = useState(false)
   const [menuBusyId, setMenuBusyId] = useState('')
   const [usingDemoData, setUsingDemoData] = useState(false)
   const [error, setError] = useState('')
+  const [selectedBranchId, setSelectedBranchId] = useState('')
+  const [alertsEnabled, setAlertsEnabled] = useState(false)
+  const [operationalBranches, setOperationalBranches] = useState<Branch[]>([])
+  const [branchBusy, setBranchBusy] = useState(false)
+  const previousIncomingIds = useRef<Set<string> | null>(null)
+  const audioContext = useRef<AudioContext | null>(null)
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+  const session = getStaffSession()
+  const branchSource = operationalBranches.length > 0
+    ? operationalBranches
+    : FALLBACK_BRANCHES
+  const staffBranches = branchSource.filter(branch =>
+    session?.staff.branch_ids.includes(branch.id)
+  )
+  const selectedBranch = staffBranches.find(branch => branch.id === selectedBranchId)
+
+  const playNewOrderSound = () => {
+    const context = audioContext.current
+    if (!context) return
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.frequency.setValueAtTime(740, context.currentTime)
+    gain.gain.setValueAtTime(0.0001, context.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.22, context.currentTime + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.45)
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start()
+    oscillator.stop(context.currentTime + 0.5)
+  }
 
   const loadMenuAvailability = async () => {
+    if (!getStaffSession()) {
+      window.location.assign('/admin/login')
+      return
+    }
     try {
-      const res = await fetch(`${apiUrl}/admin/menu`)
+      const params = new URLSearchParams({ branch_id: selectedBranchId })
+      const res = await staffFetch(`${apiUrl}/admin/menu?${params.toString()}`)
       if (!res.ok) {
         throw new Error('Failed to load menu availability')
       }
@@ -624,7 +679,7 @@ export default function DashboardPage() {
       const data = await res.json()
       const items = Array.isArray(data.items) ? data.items : []
       if (items.length === 0) {
-        setMenuAvailability(buildDemoMenuAvailability())
+        setMenuAvailability([])
         return
       }
 
@@ -640,16 +695,68 @@ export default function DashboardPage() {
           }))
       )
     } catch (_err) {
-      setMenuAvailability(buildDemoMenuAvailability())
+      setMenuAvailability([])
+    }
+  }
+
+  const loadStaffBranches = async () => {
+    try {
+      const response = await staffFetch(`${apiUrl}/admin/branches`)
+      if (!response.ok) throw new Error('Failed to load staff branches')
+      const data = await response.json()
+      if (Array.isArray(data.items) && data.items.length > 0) {
+        setOperationalBranches(data.items)
+        setSelectedBranchId(current =>
+          data.items.some((branch: Branch) => branch.id === current)
+            ? current
+            : data.items[0].id
+        )
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load staff branches')
+    }
+  }
+
+  const toggleBranchOrdering = async () => {
+    if (!selectedBranch) return
+    setBranchBusy(true)
+    setError('')
+    try {
+      const response = await staffFetch(
+        `${apiUrl}/admin/branches/${selectedBranch.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accepting_orders: !selectedBranch.accepting_orders,
+          }),
+        }
+      )
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to update branch ordering')
+      }
+      setOperationalBranches(current =>
+        current.map(branch => branch.id === data.id ? data : branch)
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update branch ordering')
+    } finally {
+      setBranchBusy(false)
     }
   }
 
   const fetchDashboard = async () => {
+    if (!selectedBranchId) return
     setLoading(true)
     setError('')
 
     try {
-      const listRes = await fetch(`${apiUrl}/admin/orders?limit=50`)
+      const params = new URLSearchParams({
+        limit: '50',
+        branch_id: selectedBranchId,
+      })
+      const listRes = await staffFetch(`${apiUrl}/admin/orders?${params.toString()}`)
       if (!listRes.ok) {
         throw new Error('Failed to load live orders')
       }
@@ -658,15 +765,15 @@ export default function DashboardPage() {
       const items = Array.isArray(listData.items) ? listData.items : []
 
       if (items.length === 0) {
-        setOrders(DEMO_ORDERS)
-        setUsingDemoData(true)
-        setSelectedId(prev => prev || DEMO_ORDERS[0].id)
+        setOrders([])
+        setUsingDemoData(false)
+        setSelectedId('')
         return
       }
 
       const details = await Promise.all(
         items.map(async (order: { id: string }) => {
-          const detailRes = await fetch(`${apiUrl}/admin/orders/${order.id}`)
+          const detailRes = await staffFetch(`${apiUrl}/admin/orders/${order.id}`)
           if (!detailRes.ok) {
             throw new Error(`Failed to load order ${order.id}`)
           }
@@ -676,6 +783,16 @@ export default function DashboardPage() {
 
       setOrders(details)
       setUsingDemoData(false)
+      const incomingIds = new Set(
+        details
+          .filter((order: OrderDetail) => order.status === 'new')
+          .map((order: OrderDetail) => order.id)
+      )
+      const hasNewArrival =
+        previousIncomingIds.current !== null &&
+        Array.from(incomingIds).some(id => !previousIncomingIds.current?.has(id))
+      if (hasNewArrival) playNewOrderSound()
+      previousIncomingIds.current = incomingIds
       setSelectedId(prev => {
         if (prev && details.some((order: OrderDetail) => order.id === prev)) {
           return prev
@@ -685,26 +802,39 @@ export default function DashboardPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load dashboard'
       setError(message)
-      setOrders(DEMO_ORDERS)
-      setUsingDemoData(true)
-      setSelectedId(prev => prev || DEMO_ORDERS[0].id)
+      setOrders([])
+      setUsingDemoData(false)
+      setSelectedId('')
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    void fetchDashboard()
-    void loadMenuAvailability()
+    const currentSession = getStaffSession()
+    if (!currentSession) {
+      window.location.assign('/admin/login')
+      return
+    }
+    setSelectedBranchId(currentSession.staff.branch_ids[0] || '')
+    void loadStaffBranches()
   }, [])
 
   useEffect(() => {
+    if (!selectedBranchId) return
+    previousIncomingIds.current = null
+    void fetchDashboard()
+    void loadMenuAvailability()
+  }, [selectedBranchId])
+
+  useEffect(() => {
+    if (!selectedBranchId) return
     const interval = window.setInterval(() => {
       void fetchDashboard()
       void loadMenuAvailability()
     }, 15000)
     return () => window.clearInterval(interval)
-  }, [])
+  }, [selectedBranchId])
 
   const selectedOrder = useMemo(
     () => orders.find(order => order.id === selectedId) || orders[0] || null,
@@ -714,7 +844,7 @@ export default function DashboardPage() {
   const summary = useMemo(
     () => ({
       total: orders.length,
-      pendingAction: orders.filter(order => ['new', 'ready'].includes(order.status)).length,
+      pendingAction: orders.filter(order => ['new', 'ready', 'delayed'].includes(order.status)).length,
       inDelivery: orders.filter(order => order.status === 'out_for_delivery').length,
       whatsapp: orders.filter(order => order.channel === 'whatsapp').length,
       web: orders.filter(order => order.channel === 'web').length,
@@ -762,15 +892,40 @@ export default function DashboardPage() {
   const advanceOrder = async (nextStatus: OrderStatus) => {
     if (!selectedOrder || usingDemoData) return
 
+    let reasonCode: string | null = null
+    let reasonNote: string | null = null
+    let etaMinutes: number | null = null
+    if (nextStatus === 'confirmed') {
+      const etaInput = window.prompt(
+        'Estimated minutes until this order is ready or dispatched:',
+        '40'
+      )
+      if (!etaInput) return
+      etaMinutes = Number(etaInput)
+      if (!Number.isFinite(etaMinutes) || etaMinutes < 10 || etaMinutes > 240) {
+        setError('Enter an ETA between 10 and 240 minutes')
+        return
+      }
+    }
+    if (['delayed', 'rejected', 'cancel_requested', 'cancelled'].includes(nextStatus)) {
+      reasonNote = window.prompt(
+        `Give a reason for ${displayStatus(nextStatus).toLowerCase()}:`
+      )
+      if (!reasonNote?.trim()) return
+      reasonCode = 'staff_exception'
+    }
+
     setMutating(true)
     setError('')
     try {
-      const res = await fetch(`${apiUrl}/admin/orders/${selectedOrder.id}/status`, {
+      const res = await staffFetch(`${apiUrl}/admin/orders/${selectedOrder.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           status: nextStatus,
-          actor_label: 'simple-dashboard',
+          reason_code: reasonCode,
+          reason_note: reasonNote,
+          eta_minutes: etaMinutes,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -787,13 +942,63 @@ export default function DashboardPage() {
     }
   }
 
+  const markCashCollected = async () => {
+    if (!selectedOrder || selectedOrder.payment_method !== 'cash') return
+    setMutating(true)
+    setError('')
+    try {
+      const response = await staffFetch(
+        `${apiUrl}/admin/orders/${selectedOrder.id}/payment`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'paid', provider: 'manual' }),
+        }
+      )
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to update payment')
+      }
+      setOrders(current =>
+        current.map(order => order.id === data.id ? data : order)
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update payment')
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  const retryWhatsAppUpdate = async () => {
+    if (!selectedOrder) return
+    setMutating(true)
+    setError('')
+    try {
+      const response = await staffFetch(
+        `${apiUrl}/admin/orders/${selectedOrder.id}/notifications/retry`,
+        { method: 'POST' }
+      )
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || !data.sent) {
+        throw new Error(data.detail || 'WhatsApp update could not be sent')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'WhatsApp retry failed')
+    } finally {
+      setMutating(false)
+    }
+  }
+
   const toggleSoldOut = async (item: MenuAvailabilityItem) => {
     if (usingDemoData) return
 
     setMenuBusyId(item.id)
     setError('')
     try {
-      const res = await fetch(`${apiUrl}/admin/menu/${item.id}`, {
+      const branchId = selectedBranchId
+      if (!branchId) throw new Error('Select a branch before changing availability')
+      const params = new URLSearchParams({ branch_id: branchId })
+      const res = await staffFetch(`${apiUrl}/admin/menu/${item.id}?${params.toString()}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -824,7 +1029,7 @@ export default function DashboardPage() {
         <title>{RESTAURANT.name} Order Dashboard</title>
         <meta
           name="description"
-          content="Simple no-auth order tracking dashboard for restaurant demo use."
+          content="Protected branch-scoped kitchen dashboard for restaurant staff."
         />
       </Head>
 
@@ -860,6 +1065,24 @@ export default function DashboardPage() {
 
               <div className="flex flex-wrap gap-3">
                 <button
+                  type="button"
+                  onClick={() => {
+                    if (!audioContext.current) {
+                      audioContext.current = new AudioContext()
+                    }
+                    setAlertsEnabled(true)
+                    playNewOrderSound()
+                  }}
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold ${
+                    alertsEnabled
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-[#f7b32b] text-[#1b0b04]'
+                  }`}
+                >
+                  <BellRing size={16} />
+                  {alertsEnabled ? 'Alerts enabled' : 'Enable order sound'}
+                </button>
+                <button
                   onClick={() => void fetchDashboard()}
                   className="inline-flex items-center gap-2 rounded-full bg-brand-dark px-4 py-2 text-sm font-bold text-white transition hover:opacity-90"
                 >
@@ -873,12 +1096,39 @@ export default function DashboardPage() {
                   <ShoppingBag size={16} />
                   Open Menu
                 </Link>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearStaffSession()
+                    window.location.assign('/admin/login')
+                  }}
+                  className="inline-flex items-center gap-2 rounded-full border border-brand-dark/15 bg-white px-4 py-2 text-sm font-bold text-brand-dark"
+                >
+                  Sign out
+                </button>
               </div>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-3">
+              {staffBranches.length > 1 ? (
+                <select
+                  value={selectedBranchId}
+                  onChange={event => setSelectedBranchId(event.target.value)}
+                  className="rounded-full border border-black/10 bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.12em] text-brand-dark shadow-sm"
+                >
+                  {staffBranches.map(branch => (
+                    <option key={branch.id} value={branch.id}>
+                      {branch.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-brand-dark shadow-sm">
+                  {selectedBranch?.name || 'Assigned branch'}
+                </span>
+              )}
               <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-brand-dark shadow-sm">
-                {usingDemoData ? 'Demo data mode' : 'Live data mode'}
+                {session?.staff.display_name || 'Staff'}
               </span>
               <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-brand-dark shadow-sm">
                 {RESTAURANT.name}
@@ -900,8 +1150,28 @@ export default function DashboardPage() {
                   <Store size={16} />
                   Restaurant Status
                 </div>
-                <p className="mt-4 text-2xl font-black">Open Now</p>
-                <p className="mt-1 text-sm text-black/45">{RESTAURANT.address}</p>
+                <p className="mt-4 text-2xl font-black">
+                  {selectedBranch?.accepting_orders ? 'Ordering enabled' : 'Ordering paused'}
+                </p>
+                <p className="mt-1 text-sm text-black/45">
+                  {selectedBranch?.hours_label || 'Provisional hours'}
+                </p>
+                <button
+                  type="button"
+                  disabled={branchBusy || !selectedBranch}
+                  onClick={() => void toggleBranchOrdering()}
+                  className={`mt-3 rounded-full px-3 py-2 text-xs font-black ${
+                    selectedBranch?.accepting_orders
+                      ? 'bg-red-50 text-red-700'
+                      : 'bg-emerald-50 text-emerald-700'
+                  }`}
+                >
+                  {branchBusy
+                    ? 'Saving…'
+                    : selectedBranch?.accepting_orders
+                      ? 'Pause new orders'
+                      : 'Resume new orders'}
+                </button>
               </div>
               <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
                 <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
@@ -1047,7 +1317,9 @@ export default function DashboardPage() {
                             className={`w-full rounded-[22px] border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 ${
                               selectedOrder?.id === order.id
                                 ? 'border-brand-orange ring-2 ring-brand-orange/15'
-                                : 'border-black/5'
+                                : needsAcceptanceAlert(order)
+                                  ? 'border-red-400 ring-2 ring-red-100'
+                                  : 'border-black/5'
                             }`}
                           >
                             <div className="flex items-start justify-between gap-3">
@@ -1064,6 +1336,11 @@ export default function DashboardPage() {
                               >
                                 {displayStatus(order.status)}
                               </span>
+                              {needsAcceptanceAlert(order) && (
+                                <span className="rounded-full bg-red-600 px-2.5 py-1 text-[11px] font-black uppercase text-white">
+                                  Waiting 5+ min
+                                </span>
+                              )}
                             </div>
 
                             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.08em]">
@@ -1134,6 +1411,17 @@ export default function DashboardPage() {
                         </p>
                         <p className="mt-2 font-bold">{paymentLabel(selectedOrder.payment_status)}</p>
                         <p className="text-sm text-black/55">{formatMoney(selectedOrder.total_amount)}</p>
+                        {selectedOrder.payment_method === 'cash' &&
+                          selectedOrder.payment_status !== 'paid' && (
+                            <button
+                              type="button"
+                              disabled={mutating}
+                              onClick={() => void markCashCollected()}
+                              className="mt-3 rounded-full bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50"
+                            >
+                              Mark cash collected
+                            </button>
+                          )}
                       </div>
                     </div>
 
@@ -1177,7 +1465,9 @@ export default function DashboardPage() {
                       </p>
                     </div>
                     <div className="grid grid-cols-6 gap-2">
-                      {KANBAN_STATUSES.map((status, index) => {
+                      {KANBAN_STATUSES.filter(
+                        status => status.value !== 'delayed'
+                      ).map((status, index) => {
                         const active = STATUS_PROGRESS[selectedOrder.status] >= index + 1
                         return (
                           <div
@@ -1213,6 +1503,13 @@ export default function DashboardPage() {
                               <p className="font-bold">
                                 {item.quantity}x {item.name}
                               </p>
+                              {item.selections && item.selections.length > 0 && (
+                                <p className="mt-1 text-xs text-black/45">
+                                  {item.selections
+                                    .map(selection => selection.name || selection.option_id)
+                                    .join(', ')}
+                                </p>
+                              )}
                               <p className="text-sm text-black/50">
                                 {formatMoney(item.unit_price)} each
                               </p>
@@ -1249,11 +1546,29 @@ export default function DashboardPage() {
                             {nextStatus === 'preparing' && <ChefHat size={14} className="mr-2 inline" />}
                             {nextStatus === 'ready' && <PackageCheck size={14} className="mr-2 inline" />}
                             {nextStatus === 'out_for_delivery' && <Bike size={14} className="mr-2 inline" />}
-                            Move to {displayStatus(nextStatus)}
+                            {nextStatus === 'confirmed'
+                              ? 'Accept order'
+                              : nextStatus === 'preparing'
+                                ? 'Start preparing'
+                                : nextStatus === 'ready'
+                                  ? 'Mark ready'
+                                  : nextStatus === 'out_for_delivery'
+                                    ? 'Send for delivery'
+                                    : nextStatus === 'delivered'
+                                      ? 'Mark delivered'
+                                      : displayStatus(nextStatus)}
                           </button>
                         ))}
                       </div>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => void retryWhatsAppUpdate()}
+                      disabled={mutating}
+                      className="mt-3 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-bold text-brand-dark disabled:opacity-50"
+                    >
+                      Retry latest WhatsApp update
+                    </button>
                   </div>
 
                   <div>

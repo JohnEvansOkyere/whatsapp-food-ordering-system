@@ -18,6 +18,7 @@ import re
 from app.config import get_settings
 from app.services.ai_service import get_ai_response
 from app.services import session_store as store
+from app.services.logging_utils import mask_phone
 from app.services.menu_service import fetch_menu_items, normalize_price
 from app.services.order_parser import (
     format_order_for_confirmation,
@@ -65,10 +66,9 @@ Your job in freeform conversation is to:
 - If the customer asks something you cannot confirm from the facts below, do not guess. Tell them to reach customer support on {support_whatsapp}
 
 RESTAURANT INFO:
-- Location: Osu, Accra
-- Hours: Mon–Sun, 10am–10pm
-- Delivery: Within Accra, free delivery
-- Usual delivery time: 45–60 minutes depending on traffic
+- Branches: Ashesi University and Abelemkpe
+- Exact branch hours, service area, delivery fee, and ETA must be confirmed by the selected branch
+- Never promise free delivery or a delivery time unless that branch data is available
 - Payment: MoMo or Cash on delivery
 
 LIVE MENU AND DESCRIPTIONS:
@@ -741,6 +741,13 @@ async def _handle_payment_input(sender: str, text_lower: str, settings) -> str:
 
     store.set_payment_method(sender, payment)
 
+    if not store.get_branch_id(sender):
+        return (
+            "Please choose *Ashesi University* or *Abelemkpe* in the web menu "
+            f"before placing the order: {settings.menu_web_app_url}\n\n"
+            "That makes sure your food goes to the right kitchen."
+        )
+
     try:
         order = await _finalise_order(sender, payment, settings)
         store.set_state(sender, "done")
@@ -752,7 +759,8 @@ async def _handle_payment_input(sender: str, text_lower: str, settings) -> str:
             f"Tracking: {order.tracking_code or 'N/A'}\n"
             f"Payment: {payment_label}\n\n"
             f"Your full receipt is coming right now 🧾\n"
-            f"We'll deliver within 45–60 minutes. 🛵\n\n"
+            f"The selected kitchen will confirm your timing shortly. 🛵\n\n"
+            f"{f'Track your order: {order.tracking_url}' if order.tracking_url else ''}\n\n"
             f"Questions? Just reply here anytime!"
         )
 
@@ -760,7 +768,7 @@ async def _handle_payment_input(sender: str, text_lower: str, settings) -> str:
         return reply
 
     except Exception as e:
-        logger.error(f"Order finalisation failed for {sender}: {e}")
+        logger.error("Order finalisation failed for %s: %s", mask_phone(sender), e)
         store.set_state(sender, "collecting_payment")
         return (
             "Sorry, something went wrong placing your order. 😔\n"
@@ -773,6 +781,7 @@ async def _finalise_order(sender: str, payment: str, settings):
     items_raw = store.get_pending_items(sender)
     address = store.get_delivery_address(sender)
     customer_name = store.get_customer_name(sender)
+    branch_id = store.get_branch_id(sender)
 
     order_items = [
         OrderItemSchema(
@@ -794,6 +803,9 @@ async def _finalise_order(sender: str, payment: str, settings):
         items=order_items,
         total_amount=total,
         payment_method=payment,
+        branch_id=branch_id,
+        whatsapp_consent=True,
+        channel="whatsapp",
     )
 
     order = await create_order(data)

@@ -8,17 +8,17 @@ interface CategoryNavProps {
 
 export default function CategoryNav({ active, onSelect }: CategoryNavProps) {
   return (
-    <div className="sticky top-[88px] z-30 bg-brand-cream border-b border-orange-100 shadow-sm">
-      <div className="category-nav flex gap-2 px-4 py-3 overflow-x-auto">
+    <div className="sticky top-[64px] z-30 border-b border-black/5 bg-[#fffaf4]/95 shadow-sm backdrop-blur-xl">
+      <div className="category-nav mx-auto flex max-w-7xl gap-2 overflow-x-auto px-4 py-3 sm:px-6">
         {CATEGORIES.map(cat => (
           <button
             key={cat.id}
             onClick={() => onSelect(cat.id)}
             className={clsx(
-              'flex-shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200',
+              'flex-shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-bold transition-all duration-200',
               active === cat.id
-                ? 'bg-brand-orange text-white shadow-md scale-105'
-                : 'bg-white text-brand-dark border border-orange-100 active:scale-95'
+                ? 'bg-[#1b0b04] text-white shadow-md'
+                : 'border border-black/8 bg-white text-[#1b0b04] active:scale-95'
             )}
           >
             <span>{cat.emoji}</span>

@@ -12,6 +12,7 @@ class OrderStatus(str, Enum):
     preparing = "preparing"
     ready = "ready"
     out_for_delivery = "out_for_delivery"
+    delayed = "delayed"
     delivered = "delivered"
     cancel_requested = "cancel_requested"
     cancelled = "cancelled"
@@ -37,12 +38,20 @@ class FulfillmentType(str, Enum):
     dine_in = "dine_in"
 
 
+class OrderItemSelectionSchema(BaseModel):
+    group_id: str
+    option_id: str
+    name: Optional[str] = None
+    price: Optional[float] = None
+
+
 class OrderItemInputSchema(BaseModel):
     item_id: str
     name: Optional[str] = None
     quantity: int = Field(..., ge=1, le=99)
     unit_price: Optional[float] = None
     total_price: Optional[float] = None
+    selections: list[OrderItemSelectionSchema] = Field(default_factory=list)
 
 
 class OrderItemSchema(BaseModel):
@@ -51,18 +60,21 @@ class OrderItemSchema(BaseModel):
     quantity: int
     unit_price: float
     total_price: float
+    selections: list[OrderItemSelectionSchema] = Field(default_factory=list)
 
 
 class CreateOrderSchema(BaseModel):
-    customer_phone: str
-    customer_name: Optional[str] = None
-    delivery_address: str
+    customer_phone: str = Field(..., min_length=9, max_length=20)
+    customer_name: Optional[str] = Field(default=None, max_length=100)
+    delivery_address: str = Field(..., min_length=3, max_length=500)
     items: list[OrderItemInputSchema] = Field(..., min_length=1)
     total_amount: Optional[float] = None
     payment_method: PaymentMethod = PaymentMethod.momo
-    notes: Optional[str] = None
-    branch_id: Optional[str] = None
-    channel: str = "web"
+    notes: Optional[str] = Field(default=None, max_length=500)
+    branch_id: Optional[str] = Field(default=None, max_length=100)
+    idempotency_key: Optional[str] = Field(default=None, min_length=16, max_length=100)
+    whatsapp_consent: bool = False
+    channel: str = Field(default="web", max_length=30)
     fulfillment_type: FulfillmentType = FulfillmentType.delivery
 
 
@@ -70,11 +82,16 @@ class OrderResponseSchema(BaseModel):
     id: str
     order_number: Optional[str] = None
     tracking_code: Optional[str] = None
+    tracking_url: Optional[str] = None
+    whatsapp_receipt_sent: Optional[bool] = None
+    branch_id: Optional[str] = None
+    branch_name: Optional[str] = None
     customer_phone: str
     customer_name: Optional[str]
     delivery_address: str
     items: list[OrderItemSchema]
     subtotal_amount: float
+    delivery_fee: float = 0
     total_amount: float
     payment_method: PaymentMethod
     payment_status: PaymentStatus
@@ -82,6 +99,7 @@ class OrderResponseSchema(BaseModel):
     channel: str
     fulfillment_type: FulfillmentType
     notes: Optional[str]
+    accepted_eta_minutes: Optional[int] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -119,7 +137,6 @@ class AdminOrderListResponseSchema(BaseModel):
 
 
 class AdminOrderDetailSchema(OrderResponseSchema):
-    branch_id: Optional[str] = None
     tenant_id: Optional[str] = None
     customer_id: Optional[str] = None
     allowed_next_statuses: list[OrderStatus] = Field(default_factory=list)
@@ -131,6 +148,13 @@ class UpdateOrderStatusSchema(BaseModel):
     actor_label: Optional[str] = None
     reason_code: Optional[str] = None
     reason_note: Optional[str] = None
+    eta_minutes: Optional[int] = Field(default=None, ge=10, le=240)
+
+
+class UpdatePaymentSchema(BaseModel):
+    status: PaymentStatus
+    provider: str = Field(default="manual", max_length=50)
+    provider_reference: Optional[str] = Field(default=None, max_length=150)
 
 
 class CancelOrderSchema(BaseModel):
@@ -153,7 +177,27 @@ class OrderTrackingResponseSchema(BaseModel):
     status_label: str
     placed_at: datetime
     customer_name: Optional[str] = None
+    branch_name: Optional[str] = None
+    branch_slug: Optional[str] = None
+    branch_phone: Optional[str] = None
+    eta_min_minutes: Optional[int] = None
+    eta_max_minutes: Optional[int] = None
+    accepted_eta_minutes: Optional[int] = None
+    items: list[OrderItemSchema] = Field(default_factory=list)
+    subtotal_amount: float = 0
+    delivery_fee: float = 0
+    total_amount: float = 0
+    payment_status: PaymentStatus = PaymentStatus.unpaid
     timeline: list[OrderTrackingEventSchema]
+
+
+class OrderFeedbackSchema(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    comment: Optional[str] = Field(default=None, max_length=500)
+
+
+class OrderFeedbackResponseSchema(BaseModel):
+    accepted: bool = True
 
 
 class WhatsAppContact(BaseModel):

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     meta_access_token: str
     meta_phone_number_id: str
     meta_verify_token: str
+    meta_app_secret: str = ""
 
     # AI — primary: Groq, fallback: OpenAI, third: Gemini
     groq_api_key: str
@@ -24,9 +25,16 @@ class Settings(BaseSettings):
 
     # App
     menu_web_app_url: str = "https://your-menu-app.vercel.app"
+    public_web_url: str = "http://localhost:3000"
     owner_whatsapp: str
     restaurant_name: str = "Accra Eats"
     customer_support_whatsapp: str = "+233544954643"
+    staff_auth_secret: str = "local-demo-secret-change-before-production"
+    staff_demo_password: str = "ChangeMe123!"
+    staff_token_ttl_minutes: int = 720
+    enforce_business_hours: bool = False
+    rate_limit_enabled: bool = True
+    app_environment: str = "development"
 
     # CORS
     allowed_origins: str = "http://localhost:3000"

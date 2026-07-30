@@ -7,18 +7,19 @@ interface FoodCardProps {
   quantity: number
   onAdd: () => void
   onRemove: () => void
+  onView: () => void
 }
 
-export default function FoodCard({ item, quantity, onAdd, onRemove }: FoodCardProps) {
+export default function FoodCard({ item, quantity, onAdd, onRemove, onView }: FoodCardProps) {
   return (
-    <div className="food-card bg-white rounded-2xl overflow-hidden shadow-lg border border-orange-50 flex flex-col w-full hover:shadow-xl transition-shadow duration-300">
+    <article className="food-card flex w-full flex-col overflow-hidden rounded-[26px] border border-black/[0.06] bg-white shadow-[0_14px_45px_rgba(49,23,9,0.08)] transition-shadow duration-300 hover:shadow-xl">
       {/* Image — taller height for better appetite appeal */}
-      <div className="relative h-48 sm:h-56 w-full overflow-hidden flex-shrink-0 group">
+      <div className="group relative aspect-[4/3] w-full flex-shrink-0 overflow-hidden bg-[#ead8c6]">
         <Image
           src={item.image}
           alt={item.name}
           fill
-          className="object-cover transition-transform duration-500 group-hover:scale-105"
+          className="object-cover transition-transform duration-700 group-hover:scale-105"
           sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
           priority={false}
         />
@@ -26,8 +27,8 @@ export default function FoodCard({ item, quantity, onAdd, onRemove }: FoodCardPr
 
         {/* Badge */}
         {item.popular && (
-          <span className="absolute top-3 left-3 bg-brand-yellow text-brand-dark font-black px-3 py-1 rounded-full text-xs shadow-md">
-            🔥 Popular
+          <span className="absolute left-3 top-3 rounded-full bg-[#f7b32b] px-3 py-1 text-xs font-black text-[#1b0b04] shadow-md">
+            Most loved
           </span>
         )}
         {item.spicy && !item.popular && (
@@ -35,13 +36,22 @@ export default function FoodCard({ item, quantity, onAdd, onRemove }: FoodCardPr
             <Flame size={12} /> Spicy
           </span>
         )}
+        {item.soldOut && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#1b0b04]/60 backdrop-blur-[1px]">
+            <span className="rounded-full bg-white px-4 py-2 text-sm font-black text-[#1b0b04]">
+              Sold out at this branch
+            </span>
+          </div>
+        )}
 
         {/* Add/Remove */}
         <div className="absolute bottom-3 right-3">
           {quantity === 0 ? (
             <button
               onClick={onAdd}
-              className="bg-brand-orange text-white w-10 h-10 rounded-full flex items-center justify-center hover:bg-orange-600 active:scale-90 transition-all shadow-lg"
+              disabled={item.soldOut}
+              aria-label={`Add ${item.name}`}
+              className="bg-brand-orange text-white w-10 h-10 rounded-full flex items-center justify-center hover:bg-orange-600 active:scale-90 transition-all shadow-lg disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus size={20} strokeWidth={3} />
             </button>
@@ -60,14 +70,26 @@ export default function FoodCard({ item, quantity, onAdd, onRemove }: FoodCardPr
       </div>
 
       {/* Text */}
-      <div className="p-4 flex flex-col flex-1 bg-white">
-        <h3 className="font-extrabold text-brand-dark leading-tight line-clamp-2 text-base sm:text-lg flex-1 mb-1">
+      <div className="flex flex-1 flex-col bg-white p-4">
+        <h3 className="mb-1 flex-1 text-base font-black leading-tight text-[#1b0b04] sm:text-lg">
           {item.name}
         </h3>
-        <span className="text-brand-orange font-black text-sm sm:text-base mt-auto block">
-          GHS {item.price}
-        </span>
+        <p className="mb-4 line-clamp-2 text-xs leading-5 text-black/50 sm:text-sm">
+          {item.description}
+        </p>
+        <div className="mt-auto flex items-center justify-between">
+          <span className="text-sm font-black text-[#d95d20] sm:text-base">
+            GHS {item.price.toFixed(2)}
+          </span>
+          <button
+            type="button"
+            onClick={onView}
+            className="text-[11px] font-bold uppercase tracking-[0.12em] text-black/45 underline decoration-black/15 underline-offset-4"
+          >
+            {item.optionGroups?.length ? 'Choose options' : 'View details'}
+          </button>
+        </div>
       </div>
-    </div>
+    </article>
   )
 }
