@@ -41,14 +41,14 @@ export function useCart() {
     window.localStorage.setItem('restaurant-cart-v1', JSON.stringify(items))
   }, [hydrated, items])
 
-  const addItem = useCallback((item: MenuItem) => {
+  const addItem = useCallback((item: MenuItem, quantity: number = 1) => {
     setItems(prev => {
       const incoming = item as CartItem
       const cartKey = incoming.cartKey || item.id
       const existing = prev.find(i => i.cartKey === cartKey)
       if (existing) {
         return prev.map(i =>
-          i.cartKey === cartKey ? { ...i, quantity: i.quantity + 1 } : i
+          i.cartKey === cartKey ? { ...i, quantity: i.quantity + quantity } : i
         )
       }
       return [
@@ -57,14 +57,14 @@ export function useCart() {
           ...item,
           cartKey,
           selectedOptions: incoming.selectedOptions || [],
-          quantity: 1,
+          quantity,
         },
       ]
     })
   }, [])
 
   const addConfiguredItem = useCallback(
-    (item: MenuItem, selectedOptions: SelectedOption[]) => {
+    (item: MenuItem, selectedOptions: SelectedOption[], quantity: number = 1) => {
       const signature = selectedOptions
         .map(option => `${option.groupId}:${option.optionId}`)
         .sort()
@@ -73,12 +73,15 @@ export function useCart() {
         (sum, option) => sum + option.price,
         0
       )
-      addItem({
-        ...item,
-        price: item.price + optionsPrice,
-        cartKey: `${item.id}::${signature || 'base'}`,
-        selectedOptions,
-      } as CartItem)
+      addItem(
+        {
+          ...item,
+          price: item.price + optionsPrice,
+          cartKey: `${item.id}::${signature || 'base'}`,
+          selectedOptions,
+        } as CartItem,
+        quantity
+      )
     },
     [addItem]
   )

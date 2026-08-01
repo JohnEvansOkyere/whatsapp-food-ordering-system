@@ -11,6 +11,7 @@ Run these files in order inside the Supabase SQL editor.
 5. `0005_menu_availability.sql`
 6. `0006_two_branch_tracking.sql`
 7. `0007_launch_operations.sql`
+8. `0008_customer_accounts.sql`
 
 ## Notes
 

@@ -126,4 +126,3 @@ OWNER_WHATSAPP=233XXXXXXXXX
 - Setup fee: GHS 200 (optional)
 
 
-codex resume 019dce48-547d-7831-9671-ff30e9a40601

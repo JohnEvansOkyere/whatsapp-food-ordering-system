@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
-from app.routers import admin, auth, menu, orders, public, webhook
+from app.routers import admin, auth, customer_auth, menu, orders, public, webhook
 from app.services.rate_limit import rate_limit_sensitive_routes
 from app.database import get_supabase
 import logging
@@ -17,9 +17,12 @@ settings = get_settings()
 if settings.app_environment.lower() == "production" and (
     settings.staff_auth_secret == "local-demo-secret-change-before-production"
     or settings.staff_demo_password == "ChangeMe123!"
+    or settings.customer_auth_secret
+    == "local-customer-secret-change-before-production"
 ):
     raise RuntimeError(
-        "Production requires unique STAFF_AUTH_SECRET and STAFF_DEMO_PASSWORD values"
+        "Production requires unique STAFF_AUTH_SECRET, STAFF_DEMO_PASSWORD and "
+        "CUSTOMER_AUTH_SECRET values"
     )
 deploy_sha = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "unknown"
 
@@ -42,6 +45,7 @@ app.middleware("http")(rate_limit_sensitive_routes)
 # Routers
 app.include_router(public.router)
 app.include_router(auth.router)
+app.include_router(customer_auth.router)
 app.include_router(admin.router)
 app.include_router(orders.router)
 app.include_router(webhook.router)

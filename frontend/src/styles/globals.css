@@ -7,11 +7,13 @@
 :root {
   --font-display: 'Playfair Display', serif;
   --font-body: 'DM Sans', sans-serif;
-  --brand-red: #e63946;
-  --brand-orange: #F26419;
-  --brand-yellow: #FFBE0B;
+  --brand-gold: #f7b32b;
+  --brand-gold-hi: #ffc852;
+  --brand-gold-deep: #d99400;
+  --brand-ink: #1a0a00;
   --brand-dark: #111111;
   --brand-cream: #FFF8F0;
+  --brand-danger: #e63946;
 }
 
 * {
@@ -37,7 +39,7 @@ body {
   background: #1a1a1a;
 }
 ::-webkit-scrollbar-thumb {
-  background: #e63946;
+  background: var(--brand-gold-deep);
   border-radius: 2px;
 }
 
@@ -50,13 +52,25 @@ body {
   display: none;
 }
 
-/* Menu item row hover */
+/* Menu item card hover */
 .menu-item-row {
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 .menu-item-row:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(230, 57, 70, 0.08);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(247, 179, 43, 0.1);
+}
+
+/* Bottom sheets (mobile cart) share the app's dark surface */
+.sheet-enter {
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-item-row,
+  .sheet-enter {
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Cart button pulse */

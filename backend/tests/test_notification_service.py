@@ -66,6 +66,87 @@ class FakeSupabase:
         return FakeQuery(self.tables, name)
 
 
+def test_receipt_fans_out_to_both_whatsapp_and_sms(monkeypatch):
+    database = FakeSupabase()
+    channels_sent = []
+
+    async def fake_whatsapp(_order):
+        channels_sent.append("whatsapp")
+        return True
+
+    async def fake_sms(_order):
+        channels_sent.append("sms")
+        return True
+
+    monkeypatch.setattr(notification_service, "get_supabase", lambda: database)
+    monkeypatch.setattr(
+        notification_service, "send_order_receipt_to_customer", fake_whatsapp
+    )
+    monkeypatch.setattr(notification_service, "send_order_receipt_sms", fake_sms)
+
+    order = SimpleNamespace(
+        id="order-1",
+        tenant_id=None,
+        branch_id="branch-1",
+        order_number="ORD-1",
+        status=SimpleNamespace(value="new"),
+        branch_name="Abelemkpe",
+        tracking_url="https://example.com/track/token",
+        customer_phone="233244123456",
+    )
+
+    result = asyncio.run(
+        notification_service.notify_order_created(order, order_event_id="event-1")
+    )
+
+    assert result is True
+    assert sorted(channels_sent) == ["sms", "whatsapp"]
+    rows = database.tables["notification_events"]
+    assert sorted(row["channel"] for row in rows) == ["sms", "whatsapp"]
+    assert all(row["status"] == "sent" for row in rows)
+
+
+def test_sms_failure_does_not_suppress_whatsapp(monkeypatch):
+    database = FakeSupabase()
+
+    async def fake_whatsapp(_order):
+        return True
+
+    async def failing_sms(_order):
+        raise RuntimeError("moolre unreachable")
+
+    monkeypatch.setattr(notification_service, "get_supabase", lambda: database)
+    monkeypatch.setattr(
+        notification_service, "send_order_receipt_to_customer", fake_whatsapp
+    )
+    monkeypatch.setattr(notification_service, "send_order_receipt_sms", failing_sms)
+
+    order = SimpleNamespace(
+        id="order-1",
+        tenant_id=None,
+        branch_id="branch-1",
+        order_number="ORD-1",
+        status=SimpleNamespace(value="new"),
+        branch_name="Abelemkpe",
+        tracking_url="https://example.com/track/token",
+        customer_phone="233244123456",
+    )
+
+    # An SMS outage must not stop the WhatsApp receipt or bubble up to the order.
+    result = asyncio.run(
+        notification_service.notify_order_created(order, order_event_id="event-1")
+    )
+
+    assert result is True
+    whatsapp_rows = [
+        row
+        for row in database.tables["notification_events"]
+        if row["channel"] == "whatsapp"
+    ]
+    assert len(whatsapp_rows) == 1
+    assert whatsapp_rows[0]["status"] == "sent"
+
+
 def test_status_notifications_retry_and_remain_idempotent(monkeypatch):
     database = FakeSupabase()
     attempts = 0
@@ -109,6 +190,11 @@ def test_status_notifications_retry_and_remain_idempotent(monkeypatch):
     assert first is True
     assert second is True
     assert attempts == 3
-    assert len(database.tables["notification_events"]) == 1
-    assert database.tables["notification_events"][0]["status"] == "sent"
-    assert database.tables["notification_events"][0]["attempt_count"] == 3
+
+    # Each channel keeps its own outbox row, so WhatsApp dedupes independently
+    # of SMS (the unique index is order_event_id + channel + notification_type).
+    rows = database.tables["notification_events"]
+    whatsapp_rows = [row for row in rows if row["channel"] == "whatsapp"]
+    assert len(whatsapp_rows) == 1
+    assert whatsapp_rows[0]["status"] == "sent"
+    assert whatsapp_rows[0]["attempt_count"] == 3

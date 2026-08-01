@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import BranchPicker from '@/components/BranchPicker'
 import CartSidebar from '@/components/CartSidebar'
+import MobileCartSheet from '@/components/MobileCartSheet'
 import StoreHero from '@/components/StoreHero'
 import ProductSheet from '@/components/ProductSheet'
 import { useCart } from '@/hooks/useCart'
@@ -65,7 +66,9 @@ function toUiMenuItem(item: ApiMenuItem): MenuItem {
   }
 }
 
-// ── Horizontal menu item card (Pizzaman-style) ─────────────────────────────
+// ── Horizontal menu item row (Pizzaman-style) ──────────────────────────────
+// Square thumbnail left, copy right, add control top-right. Names wrap instead
+// of clipping so a dish is never shown as "Jol…".
 function MenuItemRow({
   item,
   quantity,
@@ -82,77 +85,84 @@ function MenuItemRow({
   return (
     <article
       onClick={() => !item.soldOut && onView()}
-      className="menu-item-row group relative flex cursor-pointer items-center gap-4 rounded-2xl bg-[#1e1e1e] p-3 transition-all duration-200 hover:bg-[#262626]"
+      className="menu-item-row group relative flex cursor-pointer gap-3 rounded-2xl bg-[#1e1e1e] p-3 transition-colors duration-200 hover:bg-[#262626] sm:gap-2.5"
     >
-      {/* Image */}
-      <div className="relative h-[78px] w-[78px] flex-shrink-0 overflow-hidden rounded-xl bg-[#2a2a2a]">
+      {/* Thumbnail — trimmed at the 2-column breakpoint so dish names keep
+          enough room to wrap instead of clipping. */}
+      <div className="relative h-[92px] w-[92px] flex-shrink-0 overflow-hidden rounded-xl bg-[#2a2a2a] sm:h-20 sm:w-20">
         <Image
           src={item.image}
           alt={item.name}
           fill
           className={`object-cover transition-transform duration-500 group-hover:scale-105 ${item.soldOut ? 'opacity-40 grayscale' : ''}`}
-          sizes="78px"
+          sizes="(max-width: 640px) 92px, 80px"
         />
+        {item.popular && !item.soldOut && (
+          <span className="absolute left-1 top-1 rounded-full bg-black/80 px-1.5 py-0.5 text-[8px] font-black text-[#ffc852] backdrop-blur-sm">
+            ⭐ POPULAR
+          </span>
+        )}
+        {item.spicy && !item.popular && !item.soldOut && (
+          <span className="absolute left-1 top-1 rounded-full bg-black/80 px-1.5 py-0.5 text-[8px] font-black text-[#ff9f6b] backdrop-blur-sm">
+            🌶 SPICY
+          </span>
+        )}
         {item.soldOut && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <span className="rounded-full bg-black/70 px-2 py-0.5 text-[9px] font-black text-white/70">
+            <span className="rounded-full bg-black/80 px-2 py-0.5 text-[9px] font-black text-white">
               SOLD OUT
             </span>
           </div>
         )}
       </div>
 
-      {/* Info */}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-start gap-1.5">
-          <h3 className="flex-1 truncate text-sm font-bold leading-tight text-white">
+      {/* Copy */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-start gap-2 sm:gap-1.5">
+          <h3 className="line-clamp-2 min-w-0 flex-1 text-sm font-bold leading-snug text-white sm:line-clamp-3">
             {item.name}
           </h3>
-          {item.popular && (
-            <span className="flex-shrink-0 rounded-full bg-[#e63946]/15 px-1.5 py-0.5 text-[9px] font-black text-[#e63946]">
-              ⭐ POPULAR
-            </span>
-          )}
-          {item.spicy && !item.popular && (
-            <span className="flex items-center gap-0.5 flex-shrink-0 rounded-full bg-orange-500/15 px-1.5 py-0.5 text-[9px] font-black text-orange-400">
-              🌶 SPICY
-            </span>
-          )}
-        </div>
-        <p className="mt-0.5 line-clamp-1 text-xs text-white/40">{item.description}</p>
-        <p className="mt-1.5 text-sm font-black text-[#e63946]">
-          GHS {item.price.toFixed(2)}
-        </p>
-      </div>
-
-      {/* Add/Remove button */}
-      <div className="flex-shrink-0" onClick={e => e.stopPropagation()}>
-        {quantity === 0 ? (
-          <button
-            onClick={onAdd}
-            disabled={item.soldOut}
-            aria-label={`Add ${item.name}`}
-            className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-[#e63946] text-[#e63946] transition-all hover:bg-[#e63946] hover:text-white active:scale-90 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            <Plus size={18} strokeWidth={2.5} />
-          </button>
-        ) : (
-          <div className="flex items-center gap-1.5 rounded-full bg-[#e63946] px-2 py-1.5">
-            <button
-              onClick={onRemove}
-              className="text-white transition active:scale-90"
-            >
-              <Minus size={13} strokeWidth={3} />
-            </button>
-            <span className="w-5 text-center text-sm font-black text-white">{quantity}</span>
-            <button
-              onClick={onAdd}
-              className="text-white transition active:scale-90"
-            >
-              <Plus size={13} strokeWidth={3} />
-            </button>
+          <div className="flex-shrink-0" onClick={e => e.stopPropagation()}>
+            {quantity === 0 ? (
+              <button
+                onClick={onAdd}
+                disabled={item.soldOut}
+                aria-label={`Add ${item.name}`}
+                className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-[#f7b32b] text-[#f7b32b] sm:h-7 sm:w-7 transition-all hover:bg-[#f7b32b] hover:text-[#1a0a00] active:scale-90 disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                <Plus size={16} strokeWidth={3} />
+              </button>
+            ) : (
+              <div className="flex items-center gap-1 rounded-full bg-[#f7b32b] px-1.5 py-1">
+                <button
+                  onClick={onRemove}
+                  aria-label={`Remove one ${item.name}`}
+                  className="text-[#1a0a00] transition active:scale-90"
+                >
+                  <Minus size={13} strokeWidth={3} />
+                </button>
+                <span className="w-4 text-center text-xs font-black tabular-nums text-[#1a0a00]">
+                  {quantity}
+                </span>
+                <button
+                  onClick={onAdd}
+                  aria-label={`Add another ${item.name}`}
+                  className="text-[#1a0a00] transition active:scale-90"
+                >
+                  <Plus size={13} strokeWidth={3} />
+                </button>
+              </div>
+            )}
           </div>
-        )}
+        </div>
+
+        <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-white/70">
+          {item.description}
+        </p>
+
+        <span className="mt-auto inline-flex w-fit rounded-full bg-[#f7b32b] px-2.5 py-1 pt-1 text-xs font-black text-[#1a0a00]">
+          GHS {item.price.toFixed(2)}
+        </span>
       </div>
     </article>
   )
@@ -169,6 +179,7 @@ export default function MenuPage() {
   const [search, setSearch] = useState('')
   const [selectedProduct, setSelectedProduct] = useState<MenuItem | null>(null)
   const [online, setOnline] = useState(true)
+  const [cartOpen, setCartOpen] = useState(false)
   const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const cart = useCart()
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -357,8 +368,8 @@ export default function MenuPage() {
             <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
               {/* Logo */}
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-[#e63946] shadow-lg shadow-red-500/20">
-                  <Utensils size={18} className="text-white" />
+                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-[#f7b32b] shadow-lg shadow-[#f7b32b]/20">
+                  <Utensils size={18} className="text-[#1a0a00]" />
                 </div>
                 <div>
                   <p className="text-base font-black leading-none text-white" style={{ fontFamily: 'var(--font-display)' }}>
@@ -366,7 +377,7 @@ export default function MenuPage() {
                   </p>
                   <button
                     onClick={() => setBranchPickerOpen(true)}
-                    className="mt-0.5 flex items-center gap-1 text-xs font-semibold text-white/45 transition hover:text-[#e63946]"
+                    className="mt-0.5 flex items-center gap-1 text-xs font-semibold text-white/70 transition hover:text-[#f7b32b]"
                   >
                     <MapPin size={10} />
                     <span>{selectedBranch.name}</span>
@@ -377,25 +388,26 @@ export default function MenuPage() {
 
               {/* Search — center */}
               <div className="relative hidden max-w-xs flex-1 sm:block">
-                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/65" />
                 <input
                   type="search"
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   placeholder="Search the menu…"
-                  className="w-full rounded-full border border-white/10 bg-white/5 py-2 pl-9 pr-4 text-sm text-white placeholder-white/30 outline-none transition focus:border-[#e63946]/50 focus:ring-1 focus:ring-[#e63946]/30"
+                  className="w-full rounded-full border border-white/10 bg-white/5 py-2 pl-9 pr-4 text-sm text-white placeholder-white/50 outline-none transition focus:border-[#f7b32b]/60 focus:ring-1 focus:ring-[#f7b32b]/30"
                 />
               </div>
 
-              {/* Cart count (mobile only) */}
+              {/* Cart (mobile / tablet — desktop uses the sidebar) */}
               <button
-                onClick={() => {}}
-                className="relative flex items-center gap-2 rounded-full bg-[#e63946] px-4 py-2.5 text-sm font-black text-white shadow-lg shadow-red-500/20 transition hover:bg-red-600 active:scale-95 sm:hidden"
+                onClick={() => { setSelectedProduct(null); setCartOpen(true) }}
+                aria-label={`Open cart, ${cart.totalItems} item${cart.totalItems === 1 ? '' : 's'}`}
+                className="relative flex items-center gap-2 rounded-full bg-[#f7b32b] px-4 py-2.5 text-sm font-black text-[#1a0a00] shadow-lg shadow-[#f7b32b]/20 transition hover:bg-[#ffc852] active:scale-95 lg:hidden"
               >
                 <ShoppingCart size={16} />
                 <span>Cart</span>
                 {cart.totalItems > 0 && (
-                  <span className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs font-black text-[#e63946]">
+                  <span className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs font-black text-[#1a0a00]">
                     {cart.totalItems}
                   </span>
                 )}
@@ -404,7 +416,7 @@ export default function MenuPage() {
               {/* Status badge */}
               <div className="hidden items-center gap-1.5 sm:flex">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-                <span className="text-xs font-semibold text-white/40">
+                <span className="text-xs font-semibold text-white/70">
                   {selectedBranch.accepting_orders ? 'Open now' : 'Closed'}
                 </span>
               </div>
@@ -419,8 +431,8 @@ export default function MenuPage() {
                     onClick={() => scrollToCategory(cat.id)}
                     className={`flex-shrink-0 flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold transition-all duration-200 ${
                       activeCategory === cat.id
-                        ? 'bg-[#e63946] text-white shadow-lg shadow-red-500/20'
-                        : 'border border-white/10 bg-white/5 text-white/60 hover:border-white/20 hover:text-white'
+                        ? 'bg-[#f7b32b] text-[#1a0a00] shadow-lg shadow-[#f7b32b]/20'
+                        : 'border border-white/10 bg-white/5 text-white/70 hover:border-white/20 hover:text-white'
                     }`}
                   >
                     <span>{cat.emoji}</span>
@@ -440,44 +452,44 @@ export default function MenuPage() {
               {/* Mobile search */}
               <div className="mb-4 sm:hidden">
                 <div className="relative">
-                  <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                  <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/65" />
                   <input
                     type="search"
                     value={search}
                     onChange={e => setSearch(e.target.value)}
                     placeholder="Search the menu…"
-                    className="w-full rounded-full border border-white/10 bg-white/5 py-2 pl-9 pr-4 text-sm text-white placeholder-white/30 outline-none transition focus:border-[#e63946]/50"
+                    className="w-full rounded-full border border-white/10 bg-white/5 py-2 pl-9 pr-4 text-sm text-white placeholder-white/50 outline-none transition focus:border-[#f7b32b]/60"
                   />
                 </div>
               </div>
 
               {/* ── PROMO BANNER (only on 'All' view) ── */}
               {popularItem && activeCategory === 'all' && (
-                <div className="mb-6 overflow-hidden rounded-2xl bg-gradient-to-r from-[#e63946] via-[#c1121f] to-[#9d0208] p-5 shadow-2xl shadow-red-500/20">
+                <div className="mb-6 overflow-hidden rounded-2xl bg-gradient-to-r from-[#f7b32b] via-[#e09512] to-[#b8720a] p-5 shadow-2xl shadow-[#f7b32b]/20">
                   <div className="flex items-center justify-between gap-4">
                     <div className="flex-1">
-                      <p className="mb-1 text-xs font-black uppercase tracking-widest text-white/70">
+                      <p className="mb-1 text-[10px] font-black uppercase tracking-[0.14em] text-[#1a0a00]/75 sm:text-xs sm:tracking-widest">
                         🔥 Most loved right now
                       </p>
-                      <h2 className="text-xl font-black leading-tight text-white sm:text-2xl" style={{ fontFamily: 'var(--font-display)' }}>
+                      <h2 className="text-xl font-black leading-tight text-[#1a0a00] sm:text-2xl" style={{ fontFamily: 'var(--font-display)' }}>
                         {popularItem.name}
                       </h2>
-                      <p className="mt-1 line-clamp-2 text-xs text-white/60">
+                      <p className="mt-1 line-clamp-2 text-xs text-[#1a0a00]/75">
                         {popularItem.description}
                       </p>
-                      <div className="mt-3 flex items-center gap-3">
-                        <span className="text-xl font-black text-white">
+                      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                        <span className="whitespace-nowrap text-lg font-black text-[#1a0a00] sm:text-xl">
                           GHS {popularItem.price.toFixed(2)}
                         </span>
                         <button
                           onClick={() => quickAdd(popularItem)}
-                          className="rounded-full bg-white px-4 py-1.5 text-xs font-black text-[#e63946] transition hover:bg-white/90 active:scale-95"
+                          className="whitespace-nowrap rounded-full bg-[#1a0a00] px-4 py-1.5 text-xs font-black text-white transition hover:bg-black active:scale-95"
                         >
                           Order Now
                         </button>
                       </div>
                     </div>
-                    <div className="relative h-28 w-28 flex-shrink-0 overflow-hidden rounded-2xl shadow-xl sm:h-32 sm:w-32">
+                    <div className="relative h-24 w-24 flex-shrink-0 overflow-hidden rounded-2xl shadow-xl sm:h-32 sm:w-32">
                       <Image
                         src={popularItem.image}
                         alt={popularItem.name}
@@ -493,8 +505,8 @@ export default function MenuPage() {
 
               {/* ── LOADING ── */}
               {loadingMenu && (
-                <div className="mb-4 flex items-center gap-2 text-xs font-bold text-white/30">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#e63946]" />
+                <div className="mb-4 flex items-center gap-2 text-xs font-bold text-white/65">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#f7b32b]" />
                   Refreshing {selectedBranch.name} menu…
                 </div>
               )}
@@ -503,7 +515,7 @@ export default function MenuPage() {
               {filteredItems.length === 0 ? (
                 <div className="py-20 text-center">
                   <div className="mb-3 text-4xl">🍽️</div>
-                  <p className="font-bold text-white/30">Nothing available here yet</p>
+                  <p className="font-bold text-white/65">Nothing available here yet</p>
                 </div>
               ) : (
                 Object.entries(groupedItems).map(([category, items]) => (
@@ -523,7 +535,7 @@ export default function MenuPage() {
                         </h2>
                       </div>
                       <div className="h-px flex-1 bg-white/5" />
-                      <span className="text-xs font-semibold text-white/25">
+                      <span className="text-xs font-semibold text-white/70">
                         {items.length} item{items.length !== 1 ? 's' : ''}
                       </span>
                     </div>
@@ -547,7 +559,7 @@ export default function MenuPage() {
 
               {/* Footer */}
               <footer className="mt-10 border-t border-white/5 pt-6 text-center">
-                <p className="text-xs text-white/20">
+                <p className="text-xs text-white/55">
                   {RESTAURANT.name} · Fresh food. Clear tracking. Better ordering.
                 </p>
               </footer>
@@ -569,25 +581,39 @@ export default function MenuPage() {
             </aside>
           </div>
 
-          {/* ── MOBILE FLOATING CART BUTTON ── */}
-          {cart.totalItems > 0 && (
+          {/* ── MOBILE FLOATING CART BAR ── */}
+          {cart.totalItems > 0 && !cartOpen && (
             <div className="fixed bottom-5 left-4 right-4 z-40 lg:hidden">
               <button
-                onClick={() => setSelectedProduct(null)}
-                className="flex w-full items-center justify-between rounded-2xl bg-[#e63946] px-5 py-4 shadow-2xl shadow-red-500/30 transition active:scale-[.98]"
+                onClick={() => { setSelectedProduct(null); setCartOpen(true) }}
+                className="flex w-full items-center justify-between rounded-2xl bg-[#f7b32b] px-5 py-4 shadow-2xl shadow-[#f7b32b]/30 transition active:scale-[.98]"
               >
                 <span className="flex items-center gap-2">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-xs font-black text-white">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#1a0a00]/20 text-xs font-black text-[#1a0a00]">
                     {cart.totalItems}
                   </span>
-                  <span className="text-sm font-black text-white">View Cart</span>
+                  <span className="text-sm font-black text-[#1a0a00]">View Cart</span>
                 </span>
-                <span className="text-sm font-black text-white">
+                <span className="text-sm font-black text-[#1a0a00]">
                   GHS {(cart.totalPrice + Number(selectedBranch.delivery_fee || 0)).toFixed(2)}
                 </span>
               </button>
             </div>
           )}
+
+          {/* ── MOBILE CART SHEET (same CartSidebar as desktop) ── */}
+          <MobileCartSheet open={cartOpen} onClose={() => setCartOpen(false)}>
+            <CartSidebar
+              items={cart.items}
+              totalItems={cart.totalItems}
+              totalPrice={cart.totalPrice}
+              onAdd={cart.addItem}
+              onRemove={cart.removeItem}
+              onClear={cart.clearCart}
+              branch={selectedBranch}
+              onClose={() => setCartOpen(false)}
+            />
+          </MobileCartSheet>
 
           {/* Product options sheet */}
           <ProductSheet

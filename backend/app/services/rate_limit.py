@@ -31,6 +31,16 @@ def _limit_for(request: Request) -> tuple[int, int] | None:
         return (60, 60)
     if request.method == "POST" and path == "/auth/staff/login":
         return (10, 300)
+    # Customer accounts. Signup and resend each cost a real SMS, so they are
+    # capped hard; verify is capped to blunt code guessing from one address.
+    if request.method == "POST" and path == "/auth/customer/signup":
+        return (5, 3600)
+    if request.method == "POST" and path == "/auth/customer/resend":
+        return (5, 3600)
+    if request.method == "POST" and path == "/auth/customer/verify":
+        return (15, 900)
+    if request.method == "POST" and path == "/auth/customer/login":
+        return (10, 300)
     return None
 
 
