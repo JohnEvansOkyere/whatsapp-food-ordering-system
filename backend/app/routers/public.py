@@ -61,10 +61,6 @@ async def create_public_order(data: CreateOrderSchema):
     try:
         if not data.branch_id:
             raise ValueError("Please select Ashesi University or Abelemkpe")
-        if not data.whatsapp_consent:
-            raise ValueError(
-                "Please consent to operational WhatsApp updates for this order"
-            )
         branch = await get_public_branch(data.branch_id)
         if not branch:
             raise ValueError("Selected branch was not found")

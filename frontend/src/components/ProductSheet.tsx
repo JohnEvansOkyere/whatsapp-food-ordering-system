@@ -33,6 +33,17 @@ export default function ProductSheet({ item, onClose, onAdd }: ProductSheetProps
     )
   }, [item])
 
+  // Without this the menu scrolls behind the sheet whenever a drag starts on
+  // the backdrop, which on a phone is most of the screen.
+  useEffect(() => {
+    if (!item) return
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previous
+    }
+  }, [item])
+
   const unitPrice = useMemo(
     () => (item?.price || 0) + selections.reduce((sum, option) => sum + option.price, 0),
     [item, selections]
@@ -91,7 +102,7 @@ export default function ProductSheet({ item, onClose, onAdd }: ProductSheetProps
       />
       {/* Text colour is set explicitly here: the global body colour is white,
           which would otherwise render on this light sheet as white-on-white. */}
-      <section className="fixed inset-x-0 bottom-0 z-[81] mx-auto max-h-[92svh] max-w-2xl overflow-y-auto rounded-t-[32px] bg-white text-[#1a0a00] shadow-2xl">
+      <section className="sheet-scroll fixed inset-x-0 bottom-0 z-[81] mx-auto max-h-[92svh] max-w-2xl overflow-y-auto rounded-t-[32px] bg-white text-[#1a0a00] shadow-2xl">
         <div className="relative aspect-[16/9] overflow-hidden bg-[#ead8c6]">
           <Image
             src={item.image}
@@ -117,7 +128,7 @@ export default function ProductSheet({ item, onClose, onAdd }: ProductSheetProps
           </div>
         </div>
 
-        <div className="space-y-6 p-5 pb-8">
+        <div className="space-y-6 p-5 pb-[calc(2rem+env(safe-area-inset-bottom))]">
           <p className="text-sm leading-6 text-black/70">{item.description}</p>
 
           {(item.optionGroups || []).map(group => (

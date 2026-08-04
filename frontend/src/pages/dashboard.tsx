@@ -4,19 +4,18 @@ import Link from 'next/link'
 import {
   Bike,
   BellRing,
+  ChevronRight,
   CheckCircle2,
   ChefHat,
+  CircleAlert,
   MapPin,
   PackageCheck,
   PhoneCall,
-  Receipt,
   RefreshCw,
-  ShoppingBag,
-  Store,
-  TimerReset,
-  Truck,
+  Search,
+  X,
 } from 'lucide-react'
-import { MENU_ITEMS, RESTAURANT } from '@/lib/menuData'
+import { RESTAURANT } from '@/lib/menuData'
 import { clearStaffSession, getStaffSession, staffFetch } from '@/lib/staffAuth'
 import { Branch, FALLBACK_BRANCHES } from '@/lib/branches'
 
@@ -53,50 +52,58 @@ interface OrderEvent {
   created_at: string
 }
 
-interface OrderDetail {
+interface OrderListItem {
   id: string
   order_number?: string | null
   tracking_code?: string | null
   customer_name?: string | null
   customer_phone: string
-  delivery_address: string
   branch_id?: string | null
   status: OrderStatus
   payment_status: string
-  payment_method?: 'momo' | 'cash'
   total_amount: number
-  subtotal_amount: number
   channel: string
   created_at: string
+}
+
+interface OrderDetail extends OrderListItem {
+  delivery_address: string
+  delivery_latitude?: number | null
+  delivery_longitude?: number | null
+  payment_method?: 'momo' | 'cash'
+  subtotal_amount: number
   notes?: string | null
   items: OrderItem[]
   allowed_next_statuses: OrderStatus[]
   events: OrderEvent[]
 }
 
-interface AgentActivityItem {
-  id: string
-  title: string
-  detail: string
+type BoardView = 'live' | 'attention' | 'closed'
+
+interface BoardColumn {
+  value: OrderStatus
+  label: string
+  dot: string
 }
 
-interface MenuAvailabilityItem {
-  id: string
-  name: string
-  category: string
-  sold_out: boolean
-  active: boolean
+const BOARD_VIEWS: Record<BoardView, BoardColumn[]> = {
+  live: [
+    { value: 'new', label: 'New', dot: 'bg-amber-500' },
+    { value: 'confirmed', label: 'Accepted', dot: 'bg-sky-500' },
+    { value: 'preparing', label: 'Preparing', dot: 'bg-orange-500' },
+    { value: 'ready', label: 'Ready', dot: 'bg-emerald-500' },
+    { value: 'out_for_delivery', label: 'Delivery', dot: 'bg-indigo-500' },
+  ],
+  attention: [
+    { value: 'delayed', label: 'Delayed', dot: 'bg-rose-500' },
+    { value: 'cancel_requested', label: 'Cancel requests', dot: 'bg-red-500' },
+  ],
+  closed: [
+    { value: 'delivered', label: 'Delivered', dot: 'bg-emerald-600' },
+    { value: 'cancelled', label: 'Cancelled', dot: 'bg-gray-500' },
+    { value: 'rejected', label: 'Rejected', dot: 'bg-slate-600' },
+  ],
 }
-
-const KANBAN_STATUSES: Array<{ value: OrderStatus; label: string; accent: string }> = [
-  { value: 'new', label: 'Incoming', accent: 'border-amber-300 bg-amber-50' },
-  { value: 'confirmed', label: 'Accepted', accent: 'border-sky-300 bg-sky-50' },
-  { value: 'preparing', label: 'Cooking', accent: 'border-orange-300 bg-orange-50' },
-  { value: 'ready', label: 'Ready', accent: 'border-emerald-300 bg-emerald-50' },
-  { value: 'out_for_delivery', label: 'On The Road', accent: 'border-blue-300 bg-blue-50' },
-  { value: 'delayed', label: 'Delayed', accent: 'border-rose-300 bg-rose-50' },
-  { value: 'delivered', label: 'Completed', accent: 'border-lime-300 bg-lime-50' },
-]
 
 const STATUS_PROGRESS: Record<OrderStatus, number> = {
   new: 1,
@@ -110,6 +117,8 @@ const STATUS_PROGRESS: Record<OrderStatus, number> = {
   cancelled: 2,
   rejected: 1,
 }
+
+const CLOSED_PAGE_SIZE = 15
 
 const DEMO_ORDERS: OrderDetail[] = [
   {
@@ -458,17 +467,6 @@ const DEMO_ORDERS: OrderDetail[] = [
   },
 ]
 
-function buildDemoMenuAvailability(): MenuAvailabilityItem[] {
-  const soldOutIds = new Set(['waakye', 'spicy-wings'])
-  return MENU_ITEMS.slice(0, 6).map(item => ({
-    id: item.id,
-    name: item.name,
-    category: item.category,
-    active: true,
-    sold_out: soldOutIds.has(item.id),
-  }))
-}
-
 function formatMoney(amount: number) {
   return `${RESTAURANT.currency} ${Number(amount || 0).toFixed(2)}`
 }
@@ -561,11 +559,19 @@ function formatTimeSince(value: string) {
   return mins === 0 ? `${hours}h ago` : `${hours}h ${mins}m ago`
 }
 
-function needsAcceptanceAlert(order: OrderDetail) {
+function needsAcceptanceAlert(order: OrderListItem) {
   return (
     order.status === 'new' &&
     Date.now() - new Date(order.created_at).getTime() > 5 * 60 * 1000
   )
+}
+
+function operationalProgressStatus(order: OrderDetail): OrderStatus {
+  if (!['delayed', 'cancel_requested'].includes(order.status)) return order.status
+  const exceptionEvent = [...order.events]
+    .reverse()
+    .find(event => event.to_status === order.status && event.from_status)
+  return exceptionEvent?.from_status || order.status
 }
 
 function channelLabel(channel: string) {
@@ -624,23 +630,37 @@ function statusBadge(status: OrderStatus) {
 }
 
 export default function DashboardPage() {
-  const [orders, setOrders] = useState<OrderDetail[]>([])
-  const [menuAvailability, setMenuAvailability] = useState<MenuAvailabilityItem[]>([])
+  const [liveOrders, setLiveOrders] = useState<OrderListItem[]>([])
+  const [attentionOrders, setAttentionOrders] = useState<OrderListItem[]>([])
+  const [closedOrders, setClosedOrders] = useState<OrderListItem[]>([])
+  const [orderTotals, setOrderTotals] = useState({ live: 0, attention: 0, closed: 0 })
   const [selectedId, setSelectedId] = useState('')
+  const [selectedOrder, setSelectedOrder] = useState<OrderDetail | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadingDetail, setLoadingDetail] = useState(false)
   const [mutating, setMutating] = useState(false)
-  const [menuBusyId, setMenuBusyId] = useState('')
-  const [usingDemoData, setUsingDemoData] = useState(false)
   const [error, setError] = useState('')
   const [selectedBranchId, setSelectedBranchId] = useState('')
   const [alertsEnabled, setAlertsEnabled] = useState(false)
   const [operationalBranches, setOperationalBranches] = useState<Branch[]>([])
   const [branchBusy, setBranchBusy] = useState(false)
+  const [boardView, setBoardView] = useState<BoardView>('live')
+  const [search, setSearch] = useState('')
+  const [closedPage, setClosedPage] = useState(1)
+  const [etaMinutes, setEtaMinutes] = useState('40')
+  const [exceptionStatus, setExceptionStatus] = useState<OrderStatus | ''>('')
+  const [exceptionReason, setExceptionReason] = useState('')
   const previousIncomingIds = useRef<Set<string> | null>(null)
   const audioContext = useRef<AudioContext | null>(null)
+  const closedRequestId = useRef(0)
+  const detailRequestId = useRef(0)
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
   const session = getStaffSession()
+  const staffRole = session?.staff.role || ''
+  const canManageBranch = ['tenant_owner', 'manager'].includes(staffRole)
+  const canManagePayments = ['tenant_owner', 'manager', 'cashier'].includes(staffRole)
+  const canRetryNotifications = ['tenant_owner', 'manager', 'support'].includes(staffRole)
   const branchSource = operationalBranches.length > 0
     ? operationalBranches
     : FALLBACK_BRANCHES
@@ -662,41 +682,6 @@ export default function DashboardPage() {
     gain.connect(context.destination)
     oscillator.start()
     oscillator.stop(context.currentTime + 0.5)
-  }
-
-  const loadMenuAvailability = async () => {
-    if (!getStaffSession()) {
-      window.location.assign('/admin/login')
-      return
-    }
-    try {
-      const params = new URLSearchParams({ branch_id: selectedBranchId })
-      const res = await staffFetch(`${apiUrl}/admin/menu?${params.toString()}`)
-      if (!res.ok) {
-        throw new Error('Failed to load menu availability')
-      }
-
-      const data = await res.json()
-      const items = Array.isArray(data.items) ? data.items : []
-      if (items.length === 0) {
-        setMenuAvailability([])
-        return
-      }
-
-      setMenuAvailability(
-        items
-          .filter((item: { active?: boolean }) => item.active !== false)
-          .map((item: { id: string; name: string; category?: string; sold_out?: boolean; active?: boolean }) => ({
-            id: item.id,
-            name: item.name,
-            category: item.category || 'other',
-            sold_out: Boolean(item.sold_out),
-            active: item.active !== false,
-          }))
-      )
-    } catch (_err) {
-      setMenuAvailability([])
-    }
   }
 
   const loadStaffBranches = async () => {
@@ -746,68 +731,94 @@ export default function DashboardPage() {
     }
   }
 
-  const fetchDashboard = async () => {
+  const fetchOperationalOrders = async () => {
     if (!selectedBranchId) return
     setLoading(true)
     setError('')
 
     try {
-      const params = new URLSearchParams({
-        limit: '50',
-        branch_id: selectedBranchId,
-      })
-      const listRes = await staffFetch(`${apiUrl}/admin/orders?${params.toString()}`)
-      if (!listRes.ok) {
-        throw new Error('Failed to load live orders')
-      }
-
-      const listData = await listRes.json()
-      const items = Array.isArray(listData.items) ? listData.items : []
-
-      if (items.length === 0) {
-        setOrders([])
-        setUsingDemoData(false)
-        setSelectedId('')
-        return
-      }
-
-      const details = await Promise.all(
-        items.map(async (order: { id: string }) => {
-          const detailRes = await staffFetch(`${apiUrl}/admin/orders/${order.id}`)
-          if (!detailRes.ok) {
-            throw new Error(`Failed to load order ${order.id}`)
-          }
-          return detailRes.json()
-        })
-      )
-
-      setOrders(details)
-      setUsingDemoData(false)
+      const liveParams = new URLSearchParams({ scope: 'live', limit: '200', branch_id: selectedBranchId })
+      const attentionParams = new URLSearchParams({ scope: 'attention', limit: '200', branch_id: selectedBranchId })
+      const [liveResponse, attentionResponse] = await Promise.all([
+        staffFetch(`${apiUrl}/admin/orders?${liveParams.toString()}`),
+        staffFetch(`${apiUrl}/admin/orders?${attentionParams.toString()}`),
+      ])
+      if (!liveResponse.ok || !attentionResponse.ok) throw new Error('Failed to load live orders')
+      const [liveData, attentionData] = await Promise.all([
+        liveResponse.json(),
+        attentionResponse.json(),
+      ])
+      const nextLiveOrders: OrderListItem[] = Array.isArray(liveData.items) ? liveData.items : []
+      const nextAttentionOrders: OrderListItem[] = Array.isArray(attentionData.items) ? attentionData.items : []
+      setLiveOrders(nextLiveOrders)
+      setAttentionOrders(nextAttentionOrders)
+      setOrderTotals(current => ({
+        ...current,
+        live: Number(liveData.total || 0),
+        attention: Number(attentionData.total || 0),
+      }))
       const incomingIds = new Set(
-        details
-          .filter((order: OrderDetail) => order.status === 'new')
-          .map((order: OrderDetail) => order.id)
+        nextLiveOrders
+          .filter((order: OrderListItem) => order.status === 'new')
+          .map((order: OrderListItem) => order.id)
       )
       const hasNewArrival =
         previousIncomingIds.current !== null &&
         Array.from(incomingIds).some(id => !previousIncomingIds.current?.has(id))
       if (hasNewArrival) playNewOrderSound()
       previousIncomingIds.current = incomingIds
-      setSelectedId(prev => {
-        if (prev && details.some((order: OrderDetail) => order.id === prev)) {
-          return prev
-        }
-        return details[0]?.id || ''
-      })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load dashboard'
       setError(message)
-      setOrders([])
-      setUsingDemoData(false)
-      setSelectedId('')
     } finally {
       setLoading(false)
     }
+  }
+
+  const fetchClosedOrders = async () => {
+    if (!selectedBranchId) return
+    const requestId = ++closedRequestId.current
+    const params = new URLSearchParams({
+      scope: 'closed',
+      limit: String(CLOSED_PAGE_SIZE),
+      offset: String((closedPage - 1) * CLOSED_PAGE_SIZE),
+      branch_id: selectedBranchId,
+    })
+    if (search.trim()) params.set('q', search.trim())
+    try {
+      const response = await staffFetch(`${apiUrl}/admin/orders?${params.toString()}`)
+      if (!response.ok) throw new Error('Failed to load completed orders')
+      const data = await response.json()
+      if (requestId !== closedRequestId.current) return
+      setClosedOrders(Array.isArray(data.items) ? data.items : [])
+      setOrderTotals(current => ({ ...current, closed: Number(data.total || 0) }))
+    } catch (err) {
+      if (requestId !== closedRequestId.current) return
+      setError(err instanceof Error ? err.message : 'Failed to load completed orders')
+    }
+  }
+
+  const fetchOrderDetail = async (orderId: string) => {
+    const requestId = ++detailRequestId.current
+    setLoadingDetail(true)
+    setError('')
+    try {
+      const response = await staffFetch(`${apiUrl}/admin/orders/${orderId}`)
+      if (!response.ok) throw new Error('Failed to load order details')
+      const data = await response.json()
+      if (requestId !== detailRequestId.current) return
+      setSelectedOrder(data)
+    } catch (err) {
+      if (requestId !== detailRequestId.current) return
+      setSelectedOrder(null)
+      setError(err instanceof Error ? err.message : 'Failed to load order details')
+    } finally {
+      if (requestId === detailRequestId.current) setLoadingDetail(false)
+    }
+  }
+
+  const refreshDashboard = async () => {
+    await Promise.all([fetchOperationalOrders(), fetchClosedOrders()])
   }
 
   useEffect(() => {
@@ -823,96 +834,110 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!selectedBranchId) return
     previousIncomingIds.current = null
-    void fetchDashboard()
-    void loadMenuAvailability()
+    setSelectedId('')
+    setSelectedOrder(null)
+    void fetchOperationalOrders()
   }, [selectedBranchId])
 
   useEffect(() => {
     if (!selectedBranchId) return
     const interval = window.setInterval(() => {
-      void fetchDashboard()
-      void loadMenuAvailability()
+      void refreshDashboard()
     }, 15000)
     return () => window.clearInterval(interval)
-  }, [selectedBranchId])
+  }, [selectedBranchId, closedPage, search])
 
-  const selectedOrder = useMemo(
-    () => orders.find(order => order.id === selectedId) || orders[0] || null,
-    [orders, selectedId]
-  )
+  useEffect(() => {
+    const timeout = window.setTimeout(() => void fetchClosedOrders(), 300)
+    return () => window.clearTimeout(timeout)
+  }, [selectedBranchId, closedPage, search])
+
+  useEffect(() => {
+    if (!selectedId) {
+      detailRequestId.current += 1
+      setSelectedOrder(null)
+      setLoadingDetail(false)
+      return
+    }
+    setEtaMinutes('40')
+    setExceptionStatus('')
+    setExceptionReason('')
+    setSelectedOrder(null)
+    void fetchOrderDetail(selectedId)
+  }, [selectedId])
+
+  useEffect(() => {
+    if (staffRole === 'support') setBoardView('attention')
+  }, [staffRole])
 
   const summary = useMemo(
     () => ({
-      total: orders.length,
-      pendingAction: orders.filter(order => ['new', 'ready', 'delayed'].includes(order.status)).length,
-      inDelivery: orders.filter(order => order.status === 'out_for_delivery').length,
-      whatsapp: orders.filter(order => order.channel === 'whatsapp').length,
-      web: orders.filter(order => order.channel === 'web').length,
+      live: orderTotals.live,
+      incoming: liveOrders.filter(order => order.status === 'new').length,
+      preparing: liveOrders.filter(order => order.status === 'preparing').length,
+      ready: liveOrders.filter(order => order.status === 'ready').length,
+      inDelivery: liveOrders.filter(order => order.status === 'out_for_delivery').length,
+      attention: orderTotals.attention,
+      closed: orderTotals.closed,
     }),
-    [orders]
-  )
-
-  const agentActivity = useMemo<AgentActivityItem[]>(() => {
-    return [...orders]
-      .filter(order => order.channel === 'whatsapp')
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, 3)
-      .map(order => {
-        let title = 'Handled WhatsApp request'
-        if (order.status === 'new') {
-          title = 'New WhatsApp order captured'
-        } else if (['confirmed', 'preparing'].includes(order.status)) {
-          title = 'Order details confirmed in chat'
-        } else if (['ready', 'out_for_delivery', 'delivered'].includes(order.status)) {
-          title = 'Tracking and follow-up ready'
-        }
-
-        return {
-          id: order.id,
-          title,
-          detail: `${order.customer_name || order.customer_phone} • ${formatTimeSince(order.created_at)}`,
-        }
-      })
-  }, [orders])
-
-  const visibleMenuAvailability = useMemo(
-    () => menuAvailability.slice(0, 5),
-    [menuAvailability]
+    [liveOrders, orderTotals]
   )
 
   const groupedOrders = useMemo(
-    () =>
-      KANBAN_STATUSES.map(column => ({
+    () => {
+      const sourceOrders = boardView === 'attention' ? attentionOrders : liveOrders
+      let columns = BOARD_VIEWS[boardView]
+      if (boardView === 'live' && staffRole === 'kitchen') {
+        columns = columns.filter(column => ['new', 'confirmed', 'preparing', 'ready'].includes(column.value))
+      }
+      if (boardView === 'live' && staffRole === 'dispatch') {
+        columns = columns.filter(column => ['ready', 'out_for_delivery'].includes(column.value))
+      }
+      return columns.map(column => ({
         ...column,
-        items: orders.filter(order => order.status === column.value),
-      })),
-    [orders]
+        items: sourceOrders.filter(order => {
+          if (order.status !== column.value) return false
+          const query = search.trim().toLowerCase()
+          if (!query) return true
+          return [order.order_number, order.customer_name, order.customer_phone]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+            .includes(query)
+        }),
+      }))
+    },
+    [attentionOrders, boardView, liveOrders, search, staffRole]
   )
 
-  const advanceOrder = async (nextStatus: OrderStatus) => {
-    if (!selectedOrder || usingDemoData) return
+  const closedPageCount = Math.max(1, Math.ceil(orderTotals.closed / CLOSED_PAGE_SIZE))
 
-    let reasonCode: string | null = null
-    let reasonNote: string | null = null
-    let etaMinutes: number | null = null
-    if (nextStatus === 'confirmed') {
-      const etaInput = window.prompt(
-        'Estimated minutes until this order is ready or dispatched:',
-        '40'
-      )
-      if (!etaInput) return
-      etaMinutes = Number(etaInput)
-      if (!Number.isFinite(etaMinutes) || etaMinutes < 10 || etaMinutes > 240) {
+  useEffect(() => {
+    setClosedPage(1)
+  }, [search, selectedBranchId])
+
+  useEffect(() => {
+    if (closedPage > closedPageCount) setClosedPage(closedPageCount)
+  }, [closedPage, closedPageCount])
+
+  const advanceOrder = async (
+    nextStatus: OrderStatus,
+    options: { etaMinutes?: number; reasonNote?: string } = {}
+  ) => {
+    if (!selectedOrder) return
+
+    const actionEta = options.etaMinutes ?? null
+    const reasonNote = options.reasonNote?.trim() || null
+    const needsReason = ['delayed', 'rejected', 'cancel_requested', 'cancelled'].includes(nextStatus)
+    if (nextStatus === 'confirmed' && selectedOrder.status === 'new') {
+      if (actionEta == null || !Number.isFinite(actionEta) || actionEta < 10 || actionEta > 240) {
         setError('Enter an ETA between 10 and 240 minutes')
         return
       }
     }
-    if (['delayed', 'rejected', 'cancel_requested', 'cancelled'].includes(nextStatus)) {
-      reasonNote = window.prompt(
-        `Give a reason for ${displayStatus(nextStatus).toLowerCase()}:`
-      )
-      if (!reasonNote?.trim()) return
-      reasonCode = 'staff_exception'
+    if (needsReason && !reasonNote) {
+      setError(`Enter a reason for ${displayStatus(nextStatus).toLowerCase()}`)
+      return
     }
 
     setMutating(true)
@@ -923,9 +948,9 @@ export default function DashboardPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           status: nextStatus,
-          reason_code: reasonCode,
+          reason_code: needsReason ? 'staff_exception' : null,
           reason_note: reasonNote,
-          eta_minutes: etaMinutes,
+          eta_minutes: actionEta,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -933,7 +958,10 @@ export default function DashboardPage() {
         throw new Error(data.detail || 'Failed to update order')
       }
 
-      setOrders(prev => prev.map(order => (order.id === data.id ? data : order)))
+      setSelectedOrder(data)
+      setExceptionStatus('')
+      setExceptionReason('')
+      await refreshDashboard()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update order'
       setError(message)
@@ -959,9 +987,8 @@ export default function DashboardPage() {
       if (!response.ok) {
         throw new Error(data.detail || 'Failed to update payment')
       }
-      setOrders(current =>
-        current.map(order => order.id === data.id ? data : order)
-      )
+      setSelectedOrder(data)
+      await refreshDashboard()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update payment')
     } finally {
@@ -989,628 +1016,564 @@ export default function DashboardPage() {
     }
   }
 
-  const toggleSoldOut = async (item: MenuAvailabilityItem) => {
-    if (usingDemoData) return
-
-    setMenuBusyId(item.id)
-    setError('')
-    try {
-      const branchId = selectedBranchId
-      if (!branchId) throw new Error('Select a branch before changing availability')
-      const params = new URLSearchParams({ branch_id: branchId })
-      const res = await staffFetch(`${apiUrl}/admin/menu/${item.id}?${params.toString()}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sold_out: !item.sold_out,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        throw new Error(data.detail || 'Failed to update menu availability')
-      }
-
-      setMenuAvailability(prev =>
-        prev.map(entry =>
-          entry.id === item.id ? { ...entry, sold_out: Boolean(data.sold_out) } : entry
-        )
-      )
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update menu availability'
-      setError(message)
-    } finally {
-      setMenuBusyId('')
-    }
-  }
-
   return (
     <>
       <Head>
-        <title>{RESTAURANT.name} Order Dashboard</title>
+        <title>{`${RESTAURANT.name} Order Dashboard`}</title>
         <meta
           name="description"
           content="Protected branch-scoped kitchen dashboard for restaurant staff."
         />
       </Head>
 
-      <div className="min-h-screen bg-[#f7efe5] text-brand-dark">
-        <div
-          className="border-b border-black/5"
-          style={{
-            background:
-              'radial-gradient(circle at top left, rgba(242,100,25,0.2), transparent 28%), linear-gradient(135deg, #fff9f2 0%, #f6ecdf 55%, #f4dfc9 100%)',
-          }}
-        >
-          <div className="mx-auto max-w-7xl px-4 py-8 md:px-6">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex items-start gap-4">
-                <div className="flex h-16 w-16 items-center justify-center rounded-[22px] bg-brand-dark text-xl font-black text-brand-yellow shadow-[0_18px_50px_rgba(26,10,0,0.18)]">
-                  {restaurantInitials(RESTAURANT.name)}
-                </div>
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.35em] text-brand-orange">
-                    Restaurant Screen
-                  </p>
-                  <h1
-                    className="mt-2 text-4xl font-black md:text-5xl"
-                    style={{ fontFamily: 'var(--font-display)' }}
-                  >
-                    Orders Coming In, At A Glance
-                  </h1>
-                  <p className="mt-3 max-w-3xl text-sm text-black/65 md:text-base">
-                    A clean live screen for tracking WhatsApp and web orders in one place during service.
-                  </p>
-                </div>
+      <div className="min-h-screen bg-[#f6f5f2] text-[#1f1f1f]">
+        <header className="sticky top-0 z-30 border-b border-black/[0.07] bg-white/95 backdrop-blur">
+          <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-3 px-4 md:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#1d1109] text-xs font-black text-[#f7b32b]">
+                {restaurantInitials(RESTAURANT.name)}
               </div>
-
-              <div className="flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!audioContext.current) {
-                      audioContext.current = new AudioContext()
-                    }
-                    setAlertsEnabled(true)
-                    playNewOrderSound()
-                  }}
-                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold ${
-                    alertsEnabled
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-[#f7b32b] text-[#1b0b04]'
-                  }`}
-                >
-                  <BellRing size={16} />
-                  {alertsEnabled ? 'Alerts enabled' : 'Enable order sound'}
-                </button>
-                <button
-                  onClick={() => void fetchDashboard()}
-                  className="inline-flex items-center gap-2 rounded-full bg-brand-dark px-4 py-2 text-sm font-bold text-white transition hover:opacity-90"
-                >
-                  <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                  Refresh
-                </button>
-                <Link
-                  href="/"
-                  className="inline-flex items-center gap-2 rounded-full border border-brand-dark/15 bg-white px-4 py-2 text-sm font-bold text-brand-dark transition hover:border-brand-orange hover:text-brand-orange"
-                >
-                  <ShoppingBag size={16} />
-                  Open Menu
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => {
-                    clearStaffSession()
-                    window.location.assign('/admin/login')
-                  }}
-                  className="inline-flex items-center gap-2 rounded-full border border-brand-dark/15 bg-white px-4 py-2 text-sm font-bold text-brand-dark"
-                >
-                  Sign out
-                </button>
+              <div className="hidden min-w-0 sm:block">
+                <p className="truncate text-sm font-black">{RESTAURANT.name}</p>
+                <p className="text-xs text-black/45">Order desk</p>
               </div>
             </div>
 
-            <div className="mt-6 flex flex-wrap gap-3">
+            <nav className="ml-4 hidden items-center gap-1 md:flex" aria-label="Dashboard navigation">
+              <button className="rounded-lg bg-[#f4eee7] px-3 py-2 text-sm font-bold text-[#6b3b1e]">
+                Orders
+              </button>
+              <Link
+                href="/dashboard/settings"
+                className="rounded-lg px-3 py-2 text-sm font-semibold text-black/55 hover:bg-black/[0.04] hover:text-black"
+              >
+                Menu & settings
+              </Link>
+              <Link
+                href="/"
+                className="rounded-lg px-3 py-2 text-sm font-semibold text-black/55 hover:bg-black/[0.04] hover:text-black"
+              >
+                Customer menu
+              </Link>
+            </nav>
+
+            <div className="ml-auto flex items-center gap-2">
               {staffBranches.length > 1 ? (
                 <select
+                  aria-label="Select branch"
                   value={selectedBranchId}
-                  onChange={event => setSelectedBranchId(event.target.value)}
-                  className="rounded-full border border-black/10 bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.12em] text-brand-dark shadow-sm"
+                  onChange={event => {
+                    setSelectedId('')
+                    setSelectedBranchId(event.target.value)
+                  }}
+                  className="max-w-[110px] rounded-xl border border-black/10 bg-white px-3 py-2 text-sm font-bold outline-none focus:border-[#c56a2d] sm:max-w-[150px] md:max-w-none"
                 >
                   {staffBranches.map(branch => (
-                    <option key={branch.id} value={branch.id}>
-                      {branch.name}
-                    </option>
+                    <option key={branch.id} value={branch.id}>{branch.name}</option>
                   ))}
                 </select>
               ) : (
-                <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-brand-dark shadow-sm">
+                <span className="hidden text-sm font-semibold text-black/55 lg:inline">
                   {selectedBranch?.name || 'Assigned branch'}
                 </span>
               )}
-              <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-brand-dark shadow-sm">
-                {session?.staff.display_name || 'Staff'}
-              </span>
-              <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-brand-dark shadow-sm">
-                {RESTAURANT.name}
-              </span>
-              <span className="rounded-full bg-white px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-brand-dark shadow-sm">
-                {RESTAURANT.hours}
-              </span>
-            </div>
-
-            {error && (
-              <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                {error}
-              </div>
-            )}
-
-            <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
-                <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
-                  <Store size={16} />
-                  Restaurant Status
-                </div>
-                <p className="mt-4 text-2xl font-black">
-                  {selectedBranch?.accepting_orders ? 'Ordering enabled' : 'Ordering paused'}
-                </p>
-                <p className="mt-1 text-sm text-black/45">
-                  {selectedBranch?.hours_label || 'Provisional hours'}
-                </p>
-                <button
-                  type="button"
-                  disabled={branchBusy || !selectedBranch}
-                  onClick={() => void toggleBranchOrdering()}
-                  className={`mt-3 rounded-full px-3 py-2 text-xs font-black ${
-                    selectedBranch?.accepting_orders
-                      ? 'bg-red-50 text-red-700'
-                      : 'bg-emerald-50 text-emerald-700'
-                  }`}
-                >
-                  {branchBusy
-                    ? 'Saving…'
-                    : selectedBranch?.accepting_orders
-                      ? 'Pause new orders'
-                      : 'Resume new orders'}
-                </button>
-              </div>
-              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
-                <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
-                  <Receipt size={16} />
-                  Total Orders
-                </div>
-                <p className="mt-4 text-3xl font-black">{summary.total}</p>
-              </div>
-              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
-                <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
-                  <TimerReset size={16} />
-                  Need Attention
-                </div>
-                <p className="mt-4 text-3xl font-black">{summary.pendingAction}</p>
-                <p className="mt-1 text-sm text-black/45">New or ready for the next step</p>
-              </div>
-              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
-                <div className="flex items-center gap-2 text-sm font-semibold text-black/65">
-                  <MessageIcon />
-                  Order Sources
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <span className="rounded-full bg-[#E8FFF0] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-[#157347]">
-                    WhatsApp {summary.whatsapp}
-                  </span>
-                  <span className="rounded-full bg-[#EEF4FF] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-[#2457C5]">
-                    Web {summary.web}
-                  </span>
-                </div>
-                <p className="mt-3 text-sm text-black/45">{summary.inDelivery} currently out for delivery</p>
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
-              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-bold uppercase tracking-[0.22em] text-brand-orange">
-                      Menu Availability
-                    </p>
-                    <h2 className="mt-2 text-xl font-black">Mark items sold out fast</h2>
-                  </div>
-                  <div className="rounded-full bg-[#E8FFF0] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-[#157347]">
-                    {usingDemoData ? 'Demo only' : 'Live menu'}
-                  </div>
-                </div>
-                <div className="mt-4 space-y-3">
-                  {visibleMenuAvailability.map(item => (
-                    <div key={item.id} className="flex items-center justify-between gap-3 rounded-2xl bg-[#f8f2ea] px-4 py-3">
-                      <div>
-                        <p className="text-sm font-bold text-brand-dark">{item.name}</p>
-                        <p className="mt-1 text-xs uppercase tracking-[0.12em] text-black/45">{item.category}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase ${
-                            item.sold_out ? 'bg-[#FFE8E5] text-[#B5472E]' : 'bg-[#E8FFF0] text-[#157347]'
-                          }`}
-                        >
-                          {item.sold_out ? 'Sold out' : 'Available'}
-                        </span>
-                        <button
-                          onClick={() => void toggleSoldOut(item)}
-                          disabled={usingDemoData || menuBusyId === item.id}
-                          className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-[0.08em] text-brand-dark transition hover:border-brand-orange hover:text-brand-orange disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {usingDemoData ? 'Preview' : menuBusyId === item.id ? 'Saving' : item.sold_out ? 'Restock' : 'Sold out'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-[26px] bg-white p-4 shadow-[0_14px_50px_rgba(26,10,0,0.08)]">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-bold uppercase tracking-[0.22em] text-brand-orange">
-                      Ama Activity
-                    </p>
-                    <h2 className="mt-2 text-xl font-black">Recent assistant work</h2>
-                  </div>
-                  <span className="rounded-full bg-[#f8f2ea] px-3 py-2 text-xs font-bold uppercase tracking-[0.15em] text-black/60">
-                    Live chat flow
-                  </span>
-                </div>
-                <div className="mt-4 space-y-3">
-                  {agentActivity.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-black/10 bg-[#faf4ed] px-4 py-4 text-sm text-black/45">
-                      No WhatsApp activity yet.
-                    </div>
-                  ) : (
-                    agentActivity.map(item => (
-                      <div key={item.id} className="rounded-2xl bg-[#f8f2ea] px-4 py-3">
-                        <p className="text-sm font-bold text-brand-dark">{item.title}</p>
-                        <p className="mt-1 text-sm text-black/50">{item.detail}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+              <button
+                type="button"
+                aria-label={alertsEnabled ? 'Order sound enabled' : 'Enable order sound'}
+                title={alertsEnabled ? 'Order sound enabled' : 'Enable order sound'}
+                onClick={() => {
+                  if (!audioContext.current) audioContext.current = new AudioContext()
+                  setAlertsEnabled(true)
+                  playNewOrderSound()
+                }}
+                className={`grid h-10 w-10 place-items-center rounded-xl border ${alertsEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-black/10 bg-white text-black/55'}`}
+              >
+                <BellRing size={17} />
+              </button>
+              <button
+                type="button"
+                aria-label="Refresh orders"
+                title="Refresh orders"
+                onClick={() => void refreshDashboard()}
+                className="grid h-10 w-10 place-items-center rounded-xl border border-black/10 bg-white text-black/55 hover:text-black"
+              >
+                <RefreshCw size={17} className={loading ? 'animate-spin' : ''} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearStaffSession()
+                  window.location.assign('/admin/login')
+                }}
+                className="hidden rounded-xl border border-black/10 px-3 py-2 text-sm font-bold text-black/55 hover:text-black sm:block"
+              >
+                Sign out
+              </button>
             </div>
           </div>
-        </div>
+        </header>
 
-        <div className="mx-auto max-w-7xl px-4 py-8 md:px-6">
-          <div className="grid gap-6 xl:grid-cols-[1.45fr_0.95fr]">
-            <section>
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-black uppercase tracking-[0.2em] text-black/55">
-                  Live Order Board
-                </h2>
-                <p className="text-sm text-black/50">
-                  {usingDemoData ? 'Sample orders loaded for presentation' : 'Connected to current order flow'}
-                </p>
-              </div>
+        <main className="mx-auto max-w-[1600px] px-4 py-6 md:px-6 md:py-8">
+          {!selectedBranch?.accepting_orders && selectedBranch && (
+            <div className="mb-5 flex items-center justify-between gap-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              <span className="flex items-center gap-2 font-semibold">
+                <CircleAlert size={17} /> New orders are paused for {selectedBranch.name}.
+              </span>
+              {canManageBranch && (
+                <button onClick={() => void toggleBranchOrdering()} className="shrink-0 font-black underline">
+                  Resume
+                </button>
+              )}
+            </div>
+          )}
 
-              <div className="grid gap-4 xl:grid-cols-3">
-                {groupedOrders.map(column => (
-                  <div
-                    key={column.value}
-                    className={`rounded-[28px] border p-4 shadow-[0_18px_60px_rgba(26,10,0,0.08)] ${column.accent}`}
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-sm font-bold text-[#b15c25]">Live operations</p>
+              <h1 className="mt-1 text-3xl font-black tracking-tight md:text-4xl">Orders</h1>
+              <p className="mt-2 text-sm text-black/50">Open a card to view details and move it to the next stage.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-black/[0.07] bg-black/[0.07] shadow-sm sm:grid-cols-4">
+              {[
+                ['New', summary.incoming],
+                ['Preparing', summary.preparing],
+                ['Ready', summary.ready],
+                ['Delivery', summary.inDelivery],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="min-w-[105px] bg-white px-3 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-black/40">{label}</p>
+                  <p className="mt-1 text-xl font-black">{value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {error && (
+            <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+              {error}
+            </div>
+          )}
+
+          <section className="mt-7" aria-label="Order board">
+            <div className="flex flex-col gap-3 border-b border-black/[0.08] pb-4 lg:flex-row lg:items-center">
+              <div className="flex gap-1 overflow-x-auto rounded-xl bg-black/[0.04] p-1">
+                {([
+                  ['live', 'Live orders', summary.live],
+                  ['attention', 'Needs attention', summary.attention],
+                  ['closed', 'Completed', summary.closed],
+                ] as Array<[BoardView, string, number]>).map(([value, label, count]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setBoardView(value)}
+                    className={`whitespace-nowrap rounded-lg px-3 py-2 text-sm font-bold transition ${boardView === value ? 'bg-white text-black shadow-sm' : 'text-black/50 hover:text-black'}`}
                   >
-                    <div className="mb-4 flex items-center justify-between">
-                      <h3 className="text-sm font-black uppercase tracking-[0.18em] text-black/65">
-                        {column.label}
-                      </h3>
-                      <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-black/60">
+                    {label} <span className="ml-1 text-black/35">{count}</span>
+                  </button>
+                ))}
+              </div>
+              <label className="relative lg:ml-auto lg:w-72">
+                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-black/35" />
+                <input
+                  value={search}
+                  onChange={event => setSearch(event.target.value)}
+                  placeholder="Search order or customer"
+                  className="h-11 w-full rounded-xl border border-black/10 bg-white pl-10 pr-4 text-sm outline-none transition focus:border-[#c56a2d] focus:ring-2 focus:ring-orange-100"
+                />
+              </label>
+              <Link
+                href="/dashboard/settings"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 text-sm font-bold hover:border-black/25 md:hidden"
+              >
+                Menu & settings
+              </Link>
+            </div>
+
+            {boardView === 'closed' ? (
+              <div className="mt-5 overflow-hidden rounded-2xl border border-black/[0.08] bg-white shadow-sm">
+                <div className="max-h-[650px] overflow-auto">
+                  <table className="w-full min-w-[920px] border-collapse text-left">
+                    <thead className="sticky top-0 z-10 bg-[#f1f0ed] text-xs font-black uppercase tracking-[0.08em] text-black/45">
+                      <tr>
+                        <th className="px-5 py-3.5">Order</th>
+                        <th className="px-5 py-3.5">Customer</th>
+                        <th className="px-5 py-3.5">Status</th>
+                        <th className="px-5 py-3.5">Payment</th>
+                        <th className="px-5 py-3.5">Channel</th>
+                        <th className="px-5 py-3.5 text-right">Total</th>
+                        <th className="px-5 py-3.5">Date</th>
+                        <th className="w-20 px-5 py-3.5"><span className="sr-only">Action</span></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/[0.06]">
+                      {closedOrders.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="px-5 py-16 text-center text-sm text-black/40">
+                            No completed orders match your search.
+                          </td>
+                        </tr>
+                      ) : closedOrders.map(order => (
+                        <tr key={order.id} className="transition hover:bg-[#faf9f7]">
+                          <td className="whitespace-nowrap px-5 py-4">
+                            <p className="text-sm font-black">#{order.order_number || order.id.slice(0, 8).toUpperCase()}</p>
+                            <p className="mt-1 text-xs text-black/40">{formatTimeSince(order.created_at)}</p>
+                          </td>
+                          <td className="px-5 py-4">
+                            <p className="text-sm font-bold">{order.customer_name || 'No customer name'}</p>
+                            <p className="mt-1 text-xs text-black/40">{order.customer_phone}</p>
+                          </td>
+                          <td className="px-5 py-4">
+                            <span className={`inline-flex rounded-lg px-2.5 py-1.5 text-[11px] font-black uppercase ${statusBadge(order.status)}`}>
+                              {order.status === 'delivered' ? 'Delivered' : displayStatus(order.status)}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap px-5 py-4 text-sm font-semibold text-black/60">
+                            {paymentLabel(order.payment_status)}
+                          </td>
+                          <td className="px-5 py-4">
+                            <span className={`inline-flex rounded-md px-2 py-1 text-[10px] font-black uppercase ${channelBadge(order.channel)}`}>
+                              {channelLabel(order.channel)}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap px-5 py-4 text-right text-sm font-black">
+                            {formatMoney(order.total_amount)}
+                          </td>
+                          <td className="whitespace-nowrap px-5 py-4">
+                            <p className="text-sm font-semibold text-black/65">{formatDate(order.created_at)}</p>
+                            <p className="mt-1 text-xs text-black/40">{formatTimeSince(order.created_at)}</p>
+                          </td>
+                          <td className="px-5 py-4 text-right">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedId(order.id)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-3 py-2 text-xs font-black hover:border-black/25"
+                            >
+                              View <ChevronRight size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex flex-col gap-3 border-t border-black/[0.07] px-5 py-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-black/45">
+                    {orderTotals.closed === 0
+                      ? '0 orders'
+                      : `Showing ${(closedPage - 1) * CLOSED_PAGE_SIZE + 1}–${Math.min(closedPage * CLOSED_PAGE_SIZE, orderTotals.closed)} of ${orderTotals.closed}`}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={closedPage === 1}
+                      onClick={() => setClosedPage(page => Math.max(1, page - 1))}
+                      className="rounded-lg border border-black/10 px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      Previous
+                    </button>
+                    <span className="min-w-20 text-center text-xs font-bold text-black/50">
+                      Page {closedPage} of {closedPageCount}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={closedPage === closedPageCount}
+                      onClick={() => setClosedPage(page => Math.min(closedPageCount, page + 1))}
+                      className="rounded-lg border border-black/10 px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-5 grid auto-cols-[minmax(270px,1fr)] grid-flow-col gap-4 overflow-x-auto pb-5">
+                {groupedOrders.map(column => (
+                  <div key={column.value} className="min-h-[460px] rounded-2xl bg-[#ebeae6] p-3">
+                    <div className="flex items-center gap-2 px-1 py-1">
+                      <span className={`h-2.5 w-2.5 rounded-full ${column.dot}`} />
+                      <h2 className="text-sm font-black">{column.label}</h2>
+                      <span className="ml-auto rounded-full bg-white px-2.5 py-1 text-xs font-black text-black/50">
                         {column.items.length}
                       </span>
                     </div>
 
-                    <div className="space-y-3">
+                    <div className="mt-3 space-y-3">
                       {column.items.length === 0 ? (
-                        <div className="rounded-2xl border border-black/5 bg-white/70 px-4 py-6 text-center text-sm text-black/40">
-                          No orders here
+                        <div className="rounded-xl border border-dashed border-black/10 px-4 py-8 text-center text-sm text-black/35">
+                          No orders
                         </div>
-                      ) : (
-                        column.items.map(order => (
-                          <button
-                            key={order.id}
-                            onClick={() => setSelectedId(order.id)}
-                            className={`w-full rounded-[22px] border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 ${
-                              selectedOrder?.id === order.id
-                                ? 'border-brand-orange ring-2 ring-brand-orange/15'
-                                : needsAcceptanceAlert(order)
-                                  ? 'border-red-400 ring-2 ring-red-100'
-                                  : 'border-black/5'
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-base font-black text-brand-dark">
-                                  #{order.order_number || order.id.slice(0, 8).toUpperCase()}
-                                </p>
-                                <p className="mt-1 text-sm font-semibold text-black/70">
-                                  {order.customer_name || order.customer_phone}
-                                </p>
-                              </div>
-                              <span
-                                className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase ${statusBadge(order.status)}`}
-                              >
-                                {displayStatus(order.status)}
-                              </span>
-                              {needsAcceptanceAlert(order) && (
-                                <span className="rounded-full bg-red-600 px-2.5 py-1 text-[11px] font-black uppercase text-white">
-                                  Waiting 5+ min
-                                </span>
-                              )}
+                      ) : column.items.map(order => (
+                        <button
+                          key={order.id}
+                          type="button"
+                          onClick={() => setSelectedId(order.id)}
+                          className={`group w-full rounded-2xl border bg-white p-4 text-left shadow-[0_2px_10px_rgba(0,0,0,0.04)] transition hover:-translate-y-0.5 hover:border-black/20 hover:shadow-md ${needsAcceptanceAlert(order) ? 'border-red-300' : 'border-black/[0.06]'}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-black">#{order.order_number || order.id.slice(0, 8).toUpperCase()}</p>
+                              <p className="mt-1 text-xs text-black/40">{formatTimeSince(order.created_at)}</p>
                             </div>
-
-                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.08em]">
-                              <span className={`rounded-full px-2.5 py-1 ${channelBadge(order.channel)}`}>
-                                {channelLabel(order.channel)}
-                              </span>
-                              <span className="rounded-full bg-[#f6efe7] px-2.5 py-1 text-black/60">
-                                {paymentLabel(order.payment_status)}
-                              </span>
-                              <span className="ml-auto text-sm font-black normal-case tracking-normal text-brand-dark">
-                                {formatMoney(order.total_amount)}
-                              </span>
-                              <span className="text-sm font-medium normal-case tracking-normal text-black/45">
-                                {formatTimeSince(order.created_at)}
-                              </span>
-                            </div>
-                          </button>
-                        ))
-                      )}
+                            <p className="text-sm font-black">{formatMoney(order.total_amount)}</p>
+                          </div>
+                          <p className="mt-4 truncate text-sm font-semibold text-black/70">
+                            {order.customer_name || order.customer_phone}
+                          </p>
+                          <p className="mt-1 text-xs text-black/40">{paymentLabel(order.payment_status)}</p>
+                          {needsAcceptanceAlert(order) && (
+                            <p className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2 py-1 text-xs font-bold text-red-700">
+                              <CircleAlert size={13} /> Waiting over 5 min
+                            </p>
+                          )}
+                          <div className="mt-4 flex items-center gap-2 border-t border-black/[0.06] pt-3">
+                            <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase ${channelBadge(order.channel)}`}>
+                              {channelLabel(order.channel)}
+                            </span>
+                            <span className="rounded-md bg-black/[0.04] px-2 py-1 text-[10px] font-black uppercase text-black/45">
+                              {paymentLabel(order.payment_status)}
+                            </span>
+                            <ChevronRight size={16} className="ml-auto text-black/30 transition group-hover:translate-x-0.5 group-hover:text-black" />
+                          </div>
+                        </button>
+                      ))}
                     </div>
                   </div>
                 ))}
               </div>
-            </section>
+            )}
+          </section>
+        </main>
 
-            <aside className="rounded-[30px] bg-white p-5 shadow-[0_22px_80px_rgba(26,10,0,0.10)]">
-              {selectedOrder ? (
-                <div className="space-y-6">
-                  <div className="border-b border-black/6 pb-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-bold uppercase tracking-[0.25em] text-black/40">
-                          Order Snapshot
-                        </p>
-                        <h2
-                          className="mt-2 text-3xl font-black"
-                          style={{ fontFamily: 'var(--font-display)' }}
-                        >
-                          #{selectedOrder.order_number || selectedOrder.id.slice(0, 8).toUpperCase()}
-                        </h2>
-                        <p className="mt-1 text-sm text-black/50">
-                          {channelLabel(selectedOrder.channel)} • {formatTimeSince(selectedOrder.created_at)}
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full px-3 py-1 text-xs font-bold uppercase ${channelBadge(selectedOrder.channel)}`}>
-                          {channelLabel(selectedOrder.channel)}
-                        </span>
-                        <span
-                          className={`rounded-full px-3 py-1 text-xs font-bold uppercase ${statusBadge(selectedOrder.status)}`}
-                        >
-                          {displayStatus(selectedOrder.status)}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-2xl bg-[#f8f2ea] p-4">
-                        <p className="text-xs font-bold uppercase tracking-[0.18em] text-black/40">
-                          Customer
-                        </p>
-                        <p className="mt-2 font-bold">{selectedOrder.customer_name || 'No customer name'}</p>
-                        <p className="text-sm text-black/55">{selectedOrder.customer_phone}</p>
-                      </div>
-                      <div className="rounded-2xl bg-[#f8f2ea] p-4">
-                        <p className="text-xs font-bold uppercase tracking-[0.18em] text-black/40">
-                          Payment
-                        </p>
-                        <p className="mt-2 font-bold">{paymentLabel(selectedOrder.payment_status)}</p>
-                        <p className="text-sm text-black/55">{formatMoney(selectedOrder.total_amount)}</p>
-                        {selectedOrder.payment_method === 'cash' &&
-                          selectedOrder.payment_status !== 'paid' && (
-                            <button
-                              type="button"
-                              disabled={mutating}
-                              onClick={() => void markCashCollected()}
-                              className="mt-3 rounded-full bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50"
-                            >
-                              Mark cash collected
-                            </button>
-                          )}
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <a
-                        href={`tel:+${selectedOrder.customer_phone}`}
-                        className="inline-flex items-center justify-center gap-2 rounded-2xl border border-black/8 bg-white px-4 py-3 text-sm font-bold text-brand-dark transition hover:border-brand-orange hover:text-brand-orange"
-                      >
-                        <PhoneCall size={16} />
-                        Call Customer
-                      </a>
-                      <a
-                        href={`https://wa.me/${selectedOrder.customer_phone}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center justify-center gap-2 rounded-2xl border border-black/8 bg-white px-4 py-3 text-sm font-bold text-brand-dark transition hover:border-brand-orange hover:text-brand-orange"
-                      >
-                        <MessageIcon />
-                        Open WhatsApp
-                      </a>
-                    </div>
-
-                    <div className="mt-4 rounded-2xl border border-black/6 p-4">
-                      <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-black/40">
-                        <MapPin size={14} />
-                        Delivery Address
-                      </p>
-                      <p className="mt-2 text-sm font-medium text-black/70">
-                        {selectedOrder.delivery_address}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-black uppercase tracking-[0.18em] text-black/40">
-                        Order Progress
-                      </h3>
-                      <p className="text-sm font-bold text-brand-orange">
-                        {STATUS_PROGRESS[selectedOrder.status]}/6
-                      </p>
-                    </div>
-                    <div className="grid grid-cols-6 gap-2">
-                      {KANBAN_STATUSES.filter(
-                        status => status.value !== 'delayed'
-                      ).map((status, index) => {
-                        const active = STATUS_PROGRESS[selectedOrder.status] >= index + 1
-                        return (
-                          <div
-                            key={status.value}
-                            className={`h-2 rounded-full ${active ? 'bg-brand-orange' : 'bg-[#f0e4d6]'}`}
-                          />
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  {selectedOrder.notes && (
-                    <div className="rounded-[24px] border border-orange-200 bg-orange-50 p-4">
-                      <p className="text-xs font-bold uppercase tracking-[0.18em] text-black/40">
-                        Customer Note
-                      </p>
-                      <p className="mt-2 text-sm font-medium text-black/70">{selectedOrder.notes}</p>
-                    </div>
-                  )}
-
-                  <div>
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-black uppercase tracking-[0.18em] text-black/40">
-                        Items
-                      </h3>
-                      <p className="text-lg font-black">{formatMoney(selectedOrder.total_amount)}</p>
-                    </div>
-                    <div className="space-y-2">
-                      {selectedOrder.items.map(item => (
-                        <div key={`${selectedOrder.id}-${item.item_id}`} className="rounded-2xl bg-[#fff8f0] p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="font-bold">
-                                {item.quantity}x {item.name}
-                              </p>
-                              {item.selections && item.selections.length > 0 && (
-                                <p className="mt-1 text-xs text-black/45">
-                                  {item.selections
-                                    .map(selection => selection.name || selection.option_id)
-                                    .join(', ')}
-                                </p>
-                              )}
-                              <p className="text-sm text-black/50">
-                                {formatMoney(item.unit_price)} each
-                              </p>
-                            </div>
-                            <p className="font-black">{formatMoney(item.total_price)}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="mb-3 text-sm font-black uppercase tracking-[0.18em] text-black/40">
-                      Quick Actions
-                    </h3>
-                    {usingDemoData ? (
-                      <div className="rounded-2xl border border-dashed border-black/10 bg-[#faf4ed] px-4 py-3 text-sm text-black/45">
-                        Demo mode is read-only. Switch to live orders to update statuses here.
-                      </div>
-                    ) : selectedOrder.allowed_next_statuses.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-black/10 bg-[#faf4ed] px-4 py-3 text-sm text-black/45">
-                        This order has no further status actions.
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {selectedOrder.allowed_next_statuses.map(nextStatus => (
-                          <button
-                            key={nextStatus}
-                            onClick={() => void advanceOrder(nextStatus)}
-                            disabled={mutating}
-                            className="rounded-full bg-brand-dark px-4 py-2 text-sm font-bold text-white transition hover:bg-brand-orange disabled:opacity-60"
-                          >
-                            {nextStatus === 'confirmed' && <CheckCircle2 size={14} className="mr-2 inline" />}
-                            {nextStatus === 'preparing' && <ChefHat size={14} className="mr-2 inline" />}
-                            {nextStatus === 'ready' && <PackageCheck size={14} className="mr-2 inline" />}
-                            {nextStatus === 'out_for_delivery' && <Bike size={14} className="mr-2 inline" />}
-                            {nextStatus === 'confirmed'
-                              ? 'Accept order'
-                              : nextStatus === 'preparing'
-                                ? 'Start preparing'
-                                : nextStatus === 'ready'
-                                  ? 'Mark ready'
-                                  : nextStatus === 'out_for_delivery'
-                                    ? 'Send for delivery'
-                                    : nextStatus === 'delivered'
-                                      ? 'Mark delivered'
-                                      : displayStatus(nextStatus)}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => void retryWhatsAppUpdate()}
-                      disabled={mutating}
-                      className="mt-3 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-bold text-brand-dark disabled:opacity-50"
-                    >
-                      Retry latest WhatsApp update
-                    </button>
-                  </div>
-
-                  <div>
-                    <h3 className="mb-3 text-sm font-black uppercase tracking-[0.18em] text-black/40">
-                      Timeline
-                    </h3>
-                    <div className="space-y-3">
-                      {selectedOrder.events.map(event => (
-                        <div key={event.id} className="rounded-2xl border border-black/6 p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="font-bold">{displayEvent(event.event_type)}</p>
-                              <p className="mt-1 text-sm text-black/50">
-                                {event.to_status ? `Status: ${displayStatus(event.to_status)}` : 'Order update'}
-                              </p>
-                              {event.reason_note && (
-                                <p className="mt-2 text-sm text-black/60">{event.reason_note}</p>
-                              )}
-                            </div>
-                            <div className="text-right text-xs uppercase tracking-[0.15em] text-black/40">
-                              <p>{event.actor_label || event.actor_type}</p>
-                              <p className="mt-1">{formatDate(event.created_at)}</p>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex min-h-[520px] items-center justify-center rounded-[24px] border border-dashed border-black/10 bg-[#faf4ed] text-center">
-                  <div>
-                    <p className="text-lg font-black">No order selected</p>
-                    <p className="mt-2 text-sm text-black/45">
-                      Once orders are available, details will appear here.
-                    </p>
-                  </div>
-                </div>
-              )}
+        {loadingDetail && selectedId && !selectedOrder && (
+          <div className="fixed inset-0 z-50 bg-black/30" role="presentation" onMouseDown={() => setSelectedId('')}>
+            <aside onMouseDown={event => event.stopPropagation()} className="ml-auto flex h-full w-full max-w-[500px] items-center justify-center bg-white shadow-2xl">
+              <p className="text-sm font-bold text-black/45">Loading order details…</p>
             </aside>
           </div>
-        </div>
+        )}
+
+        {selectedOrder && (
+          <div className="fixed inset-0 z-50 bg-black/30" role="presentation" onMouseDown={() => setSelectedId('')}>
+            <aside
+              role="dialog"
+              aria-modal="true"
+              aria-label="Order details"
+              onMouseDown={event => event.stopPropagation()}
+              className="ml-auto h-full w-full max-w-[500px] overflow-y-auto bg-white shadow-2xl"
+            >
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-black/[0.07] bg-white/95 px-5 py-4 backdrop-blur">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-black/40">Order details</p>
+                  <h2 className="mt-1 text-xl font-black">#{selectedOrder.order_number || selectedOrder.id.slice(0, 8).toUpperCase()}</h2>
+                </div>
+                <button onClick={() => setSelectedId('')} aria-label="Close order details" className="grid h-10 w-10 place-items-center rounded-xl bg-black/[0.05] hover:bg-black/[0.09]">
+                  <X size={19} />
+                </button>
+              </div>
+
+              <div className="space-y-6 p-5 pb-10">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-lg px-2.5 py-1.5 text-xs font-black uppercase ${statusBadge(selectedOrder.status)}`}>{displayStatus(selectedOrder.status)}</span>
+                  <span className={`rounded-lg px-2.5 py-1.5 text-xs font-black uppercase ${channelBadge(selectedOrder.channel)}`}>{channelLabel(selectedOrder.channel)}</span>
+                  <span className="text-sm text-black/45">{formatTimeSince(selectedOrder.created_at)}</span>
+                </div>
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between text-xs font-bold text-black/45">
+                    <span>
+                      Order progress
+                      {operationalProgressStatus(selectedOrder) !== selectedOrder.status && (
+                        <> · paused from {displayStatus(operationalProgressStatus(selectedOrder))}</>
+                      )}
+                    </span>
+                    <span>{STATUS_PROGRESS[operationalProgressStatus(selectedOrder)]}/6</span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1.5">
+                    {Array.from({ length: 6 }).map((_, index) => (
+                      <span key={index} className={`h-2 rounded-full ${STATUS_PROGRESS[operationalProgressStatus(selectedOrder)] >= index + 1 ? 'bg-[#c56a2d]' : 'bg-black/[0.08]'}`} />
+                    ))}
+                  </div>
+                </div>
+
+                <section className="rounded-2xl bg-[#f6f5f2] p-4">
+                  <p className="text-xs font-black uppercase tracking-[0.14em] text-black/40">Next step</p>
+                  {selectedOrder.allowed_next_statuses.filter(status => !['delayed', 'cancel_requested', 'cancelled', 'rejected'].includes(status)).length === 0 ? (
+                    <p className="mt-3 text-sm text-black/50">No normal status action is available.</p>
+                  ) : (
+                    <div className="mt-3 grid gap-2">
+                      {selectedOrder.allowed_next_statuses
+                        .filter(status => !['delayed', 'cancel_requested', 'cancelled', 'rejected'].includes(status))
+                        .map(nextStatus => {
+                          const needsEta = nextStatus === 'confirmed' && selectedOrder.status === 'new'
+                          const isResume = ['delayed', 'cancel_requested'].includes(selectedOrder.status)
+                          return (
+                            <div key={nextStatus} className="grid gap-2">
+                              {needsEta && (
+                                <label className="text-sm font-bold text-black/65">
+                                  Ready or dispatch ETA (minutes)
+                                  <input
+                                    type="number"
+                                    min={10}
+                                    max={240}
+                                    value={etaMinutes}
+                                    onChange={event => setEtaMinutes(event.target.value)}
+                                    className="mt-2 h-11 w-full rounded-xl border border-black/10 bg-white px-3 outline-none focus:border-[#c56a2d]"
+                                  />
+                                </label>
+                              )}
+                              <button
+                                onClick={() => void advanceOrder(nextStatus, needsEta ? { etaMinutes: Number(etaMinutes) } : {})}
+                                disabled={mutating}
+                                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#1d1109] px-4 text-sm font-black text-white hover:bg-[#b15c25] disabled:opacity-50"
+                              >
+                                {nextStatus === 'confirmed' && <CheckCircle2 size={17} />}
+                                {nextStatus === 'preparing' && <ChefHat size={17} />}
+                                {nextStatus === 'ready' && <PackageCheck size={17} />}
+                                {nextStatus === 'out_for_delivery' && <Bike size={17} />}
+                                {isResume
+                                  ? `Return to ${displayStatus(nextStatus)}`
+                                  : nextStatus === 'confirmed'
+                                    ? 'Accept order'
+                                    : nextStatus === 'preparing'
+                                      ? 'Start preparing'
+                                      : nextStatus === 'ready'
+                                        ? 'Mark ready'
+                                        : nextStatus === 'out_for_delivery'
+                                          ? 'Send for delivery'
+                                          : nextStatus === 'delivered'
+                                            ? 'Mark delivered'
+                                            : displayStatus(nextStatus)}
+                              </button>
+                            </div>
+                          )
+                        })}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <div className="flex items-end justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.14em] text-black/40">Customer</p>
+                      <p className="mt-1 font-black">{selectedOrder.customer_name || 'No customer name'}</p>
+                      <p className="text-sm text-black/50">{selectedOrder.customer_phone}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <a href={`tel:+${selectedOrder.customer_phone}`} aria-label="Call customer" className="grid h-10 w-10 place-items-center rounded-xl border border-black/10 hover:border-black/30"><PhoneCall size={17} /></a>
+                      <a href={`https://wa.me/${selectedOrder.customer_phone}`} target="_blank" rel="noreferrer" aria-label="Open WhatsApp" className="grid h-10 w-10 place-items-center rounded-xl border border-black/10 hover:border-black/30"><MessageIcon /></a>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="border-t border-black/[0.07] pt-5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-black/40">Items</p>
+                    <p className="text-lg font-black">{formatMoney(selectedOrder.total_amount)}</p>
+                  </div>
+                  <div className="mt-3 divide-y divide-black/[0.06]">
+                    {selectedOrder.items.map(item => (
+                      <div key={`${selectedOrder.id}-${item.item_id}`} className="flex justify-between gap-4 py-3 first:pt-0">
+                        <div>
+                          <p className="text-sm font-bold">{item.quantity} × {item.name}</p>
+                          {item.selections && item.selections.length > 0 && <p className="mt-1 text-xs text-black/45">{item.selections.map(selection => selection.name || selection.option_id).join(', ')}</p>}
+                        </div>
+                        <p className="shrink-0 text-sm font-black">{formatMoney(item.total_price)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-black/[0.07] p-4">
+                  <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-black/40"><MapPin size={14} /> Delivery address</p>
+                  <p className="mt-2 text-sm font-semibold leading-6 text-black/70">{selectedOrder.delivery_address}</p>
+                  {selectedOrder.delivery_latitude != null && selectedOrder.delivery_longitude != null ? (
+                    <a href={`https://www.google.com/maps/search/?api=1&query=${selectedOrder.delivery_latitude},${selectedOrder.delivery_longitude}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex text-sm font-black text-[#a94f1b] hover:underline">Open in Google Maps</a>
+                  ) : (
+                    <p className="mt-2 text-xs text-black/40">No map pin — call the customer for directions.</p>
+                  )}
+                </section>
+
+                {selectedOrder.notes && (
+                  <section className="rounded-2xl bg-amber-50 p-4">
+                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-800/60">Customer note</p>
+                    <p className="mt-2 text-sm font-medium leading-6 text-amber-950">{selectedOrder.notes}</p>
+                  </section>
+                )}
+
+                <section className="flex items-center justify-between gap-3 rounded-2xl border border-black/[0.07] p-4">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-black/40">Payment</p>
+                    <p className="mt-1 text-sm font-black">{paymentLabel(selectedOrder.payment_status)}</p>
+                  </div>
+                  {canManagePayments && selectedOrder.payment_method === 'cash' && selectedOrder.payment_status !== 'paid' && (
+                    <button disabled={mutating} onClick={() => void markCashCollected()} className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">Mark cash collected</button>
+                  )}
+                </section>
+
+                {selectedOrder.allowed_next_statuses.some(status => ['delayed', 'cancel_requested', 'cancelled', 'rejected'].includes(status)) && (
+                  <details className="rounded-2xl border border-red-100 bg-red-50/50 p-4">
+                    <summary className="cursor-pointer text-sm font-black text-red-800">Exception actions</summary>
+                    <div className="mt-3 grid gap-3">
+                      <div className="flex flex-wrap gap-2">
+                      {selectedOrder.allowed_next_statuses.filter(status => ['delayed', 'cancel_requested', 'cancelled', 'rejected'].includes(status)).map(status => (
+                        <button
+                          key={status}
+                          type="button"
+                          onClick={() => setExceptionStatus(status)}
+                          className={`rounded-lg border px-3 py-2 text-xs font-bold ${exceptionStatus === status ? 'border-red-600 bg-red-600 text-white' : 'border-red-200 bg-white text-red-700'}`}
+                        >
+                          {displayStatus(status)}
+                        </button>
+                      ))}
+                      </div>
+                      {exceptionStatus && (
+                        <>
+                          <label className="text-sm font-bold text-red-900/70">
+                            Reason
+                            <textarea
+                              rows={3}
+                              value={exceptionReason}
+                              onChange={event => setExceptionReason(event.target.value)}
+                              placeholder={`Why is this order being marked ${displayStatus(exceptionStatus).toLowerCase()}?`}
+                              className="mt-2 w-full rounded-xl border border-red-200 bg-white px-3 py-2 text-sm outline-none focus:border-red-500"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            disabled={mutating || !exceptionReason.trim()}
+                            onClick={() => void advanceOrder(exceptionStatus, { reasonNote: exceptionReason })}
+                            className="rounded-xl bg-red-600 px-4 py-3 text-sm font-black text-white disabled:opacity-40"
+                          >
+                            Confirm {displayStatus(exceptionStatus).toLowerCase()}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </details>
+                )}
+
+                <details className="rounded-2xl border border-black/[0.07] p-4">
+                  <summary className="cursor-pointer text-sm font-black">Order timeline ({selectedOrder.events.length})</summary>
+                  <div className="mt-4 space-y-4 border-l border-black/10 pl-4">
+                    {selectedOrder.events.map(event => (
+                      <div key={event.id}>
+                        <p className="text-sm font-bold">{displayEvent(event.event_type)}</p>
+                        <p className="mt-1 text-xs text-black/45">{formatDate(event.created_at)} · {event.actor_label || event.actor_type}</p>
+                        {event.reason_note && <p className="mt-1 text-sm text-black/60">{event.reason_note}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+
+                {canRetryNotifications && (
+                  <button type="button" onClick={() => void retryWhatsAppUpdate()} disabled={mutating} className="w-full rounded-xl border border-black/10 px-4 py-3 text-sm font-bold text-black/60 hover:text-black disabled:opacity-50">Retry latest WhatsApp update</button>
+                )}
+              </div>
+            </aside>
+          </div>
+        )}
+
       </div>
     </>
   )

@@ -7,6 +7,7 @@ from app.schemas.order import (
     AdminOrderDetailSchema,
     AdminOrderListResponseSchema,
     CancelOrderSchema,
+    OrderListScope,
     OrderStatus,
     UpdateOrderStatusSchema,
     UpdatePaymentSchema,
@@ -23,6 +24,44 @@ from app.services.auth_service import ensure_branch_access, ensure_role, require
 from app.services.branch_service import fetch_public_branches, update_branch_ordering
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+ROLE_STATUS_TARGETS: dict[str, set[OrderStatus]] = {
+    "tenant_owner": set(OrderStatus),
+    "manager": set(OrderStatus),
+    "kitchen": {
+        OrderStatus.confirmed,
+        OrderStatus.preparing,
+        OrderStatus.ready,
+        OrderStatus.rejected,
+        OrderStatus.delayed,
+    },
+    "dispatch": {
+        OrderStatus.out_for_delivery,
+        OrderStatus.delivered,
+        OrderStatus.delayed,
+    },
+    "support": {
+        OrderStatus.cancel_requested,
+        OrderStatus.cancelled,
+        OrderStatus.delayed,
+    },
+}
+
+
+def _for_staff(
+    order: AdminOrderDetailSchema,
+    staff: StaffPrincipalSchema,
+) -> AdminOrderDetailSchema:
+    role_targets = ROLE_STATUS_TARGETS.get(staff.role, set())
+    return order.model_copy(
+        update={
+            "allowed_next_statuses": [
+                status
+                for status in order.allowed_next_statuses
+                if status in role_targets
+            ]
+        }
+    )
 
 
 class UpdateMenuAvailabilitySchema(BaseModel):
@@ -70,16 +109,31 @@ async def patch_staff_branch(
 @router.get("/orders", response_model=AdminOrderListResponseSchema)
 async def get_admin_orders(
     status: OrderStatus | None = None,
+    scope: OrderListScope = OrderListScope.all,
     branch_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=100),
     staff: StaffPrincipalSchema = Depends(require_staff),
 ):
     if branch_id:
         ensure_branch_access(staff, branch_id)
     elif len(staff.branch_ids) == 1:
         branch_id = staff.branch_ids[0]
-    items = await list_orders(status=status, branch_id=branch_id, limit=limit)
-    return AdminOrderListResponseSchema(items=items, total=len(items))
+    items, total = await list_orders(
+        status=status,
+        scope=scope,
+        branch_id=branch_id,
+        limit=limit,
+        offset=offset,
+        search=q,
+    )
+    return AdminOrderListResponseSchema(
+        items=items,
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/orders/{order_id}", response_model=AdminOrderDetailSchema)
@@ -91,7 +145,7 @@ async def get_admin_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     ensure_branch_access(staff, order.branch_id)
-    return order
+    return _for_staff(order, staff)
 
 
 @router.patch("/orders/{order_id}/status", response_model=AdminOrderDetailSchema)
@@ -104,28 +158,7 @@ async def patch_admin_order_status(
     if not existing:
         raise HTTPException(status_code=404, detail="Order not found")
     ensure_branch_access(staff, existing.branch_id)
-    role_targets = {
-        "tenant_owner": set(OrderStatus),
-        "manager": set(OrderStatus),
-        "kitchen": {
-            OrderStatus.confirmed,
-            OrderStatus.preparing,
-            OrderStatus.ready,
-            OrderStatus.rejected,
-            OrderStatus.delayed,
-        },
-        "dispatch": {
-            OrderStatus.out_for_delivery,
-            OrderStatus.delivered,
-            OrderStatus.delayed,
-        },
-        "support": {
-            OrderStatus.cancel_requested,
-            OrderStatus.cancelled,
-            OrderStatus.delayed,
-        },
-    }
-    if payload.status not in role_targets.get(staff.role, set()):
+    if payload.status not in ROLE_STATUS_TARGETS.get(staff.role, set()):
         raise HTTPException(
             status_code=403,
             detail="Your staff role cannot move an order to this status",
@@ -144,7 +177,7 @@ async def patch_admin_order_status(
 
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    return order
+    return _for_staff(order, staff)
 
 
 @router.post("/orders/{order_id}/cancel", response_model=AdminOrderDetailSchema)
@@ -166,7 +199,7 @@ async def post_admin_order_cancel(
 
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    return order
+    return _for_staff(order, staff)
 
 
 @router.patch("/orders/{order_id}/payment", response_model=AdminOrderDetailSchema)
@@ -190,7 +223,7 @@ async def patch_admin_order_payment(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    return order
+    return _for_staff(order, staff)
 
 
 @router.post(

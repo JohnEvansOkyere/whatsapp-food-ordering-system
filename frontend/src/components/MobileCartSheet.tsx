@@ -50,7 +50,9 @@ export default function MobileCartSheet({
         <div className="flex justify-center pb-1 pt-2.5">
           <div className="h-1 w-10 rounded-full bg-white/25" />
         </div>
-        <div className="h-[78svh]">{children}</div>
+        {/* dvh, not svh: the sheet should use the space the browser chrome
+            gives back once the customer has scrolled. */}
+        <div className="h-[82dvh] max-h-[calc(100dvh-72px)]">{children}</div>
       </div>
     </div>
   )

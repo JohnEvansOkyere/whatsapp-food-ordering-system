@@ -39,7 +39,7 @@ export interface Category {
 }
 
 export const RESTAURANT = {
-  name: process.env.NEXT_PUBLIC_RESTAURANT_NAME || 'Accra Eats',
+  name: process.env.NEXT_PUBLIC_RESTAURANT_NAME || 'HallMark Cafe',
   tagline: 'Real Ghanaian Flavours, Delivered Fast',
   whatsapp: process.env.NEXT_PUBLIC_RESTAURANT_WHATSAPP || '',
   address: 'Ashesi University · Abelemkpe',

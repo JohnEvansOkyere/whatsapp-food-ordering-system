@@ -19,6 +19,13 @@ class OrderStatus(str, Enum):
     rejected = "rejected"
 
 
+class OrderListScope(str, Enum):
+    all = "all"
+    live = "live"
+    attention = "attention"
+    closed = "closed"
+
+
 class PaymentMethod(str, Enum):
     momo = "momo"
     cash = "cash"
@@ -67,13 +74,21 @@ class CreateOrderSchema(BaseModel):
     customer_phone: str = Field(..., min_length=9, max_length=20)
     customer_name: Optional[str] = Field(default=None, max_length=100)
     delivery_address: str = Field(..., min_length=3, max_length=500)
+    # Present when the customer picked the address on the map. Riders navigate
+    # to these when set; a typed-only address leaves them null.
+    delivery_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    delivery_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    delivery_place_id: Optional[str] = Field(default=None, max_length=200)
     items: list[OrderItemInputSchema] = Field(..., min_length=1)
     total_amount: Optional[float] = None
     payment_method: PaymentMethod = PaymentMethod.momo
     notes: Optional[str] = Field(default=None, max_length=500)
     branch_id: Optional[str] = Field(default=None, max_length=100)
     idempotency_key: Optional[str] = Field(default=None, min_length=16, max_length=100)
-    whatsapp_consent: bool = False
+    # Placing an order is the consent for the messages about that order: the
+    # receipt, the tracking link, and status updates all go to the verified
+    # number automatically. Nothing marketing is sent on this flag.
+    whatsapp_consent: bool = True
     channel: str = Field(default="web", max_length=30)
     fulfillment_type: FulfillmentType = FulfillmentType.delivery
 
@@ -89,6 +104,8 @@ class OrderResponseSchema(BaseModel):
     customer_phone: str
     customer_name: Optional[str]
     delivery_address: str
+    delivery_latitude: Optional[float] = None
+    delivery_longitude: Optional[float] = None
     items: list[OrderItemSchema]
     subtotal_amount: float
     delivery_fee: float = 0
@@ -134,6 +151,8 @@ class AdminOrderListItemSchema(BaseModel):
 class AdminOrderListResponseSchema(BaseModel):
     items: list[AdminOrderListItemSchema]
     total: int
+    offset: int = 0
+    limit: int = 50
 
 
 class AdminOrderDetailSchema(OrderResponseSchema):

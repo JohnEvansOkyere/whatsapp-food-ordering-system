@@ -4,6 +4,7 @@ import { CartItem } from '../hooks/useCart'
 import Image from 'next/image'
 import { Branch, branchEta } from '@/lib/branches'
 import { trackEvent } from '@/lib/analytics'
+import AddressField, { DeliveryLocation } from './AddressField'
 import CustomerAuthSheet from './CustomerAuthSheet'
 import {
   CustomerSession,
@@ -23,15 +24,9 @@ interface CartSidebarProps {
   onClose?: () => void
 }
 
-interface CheckoutForm {
-  phone: string
-  name: string
-  address: string
-  landmark: string
-  payment: 'momo' | 'cash'
-}
-
 type Step = 'cart' | 'checkout' | 'success'
+
+const SAVED_ADDRESS_KEY = 'restaurant-delivery-address-v1'
 
 export default function CartSidebar({
   items,
@@ -51,29 +46,38 @@ export default function CartSidebar({
   const [trackingUrl, setTrackingUrl] = useState('')
   const [whatsappReceiptSent, setWhatsappReceiptSent] = useState<boolean | null>(null)
   const [confirmedTotal, setConfirmedTotal] = useState(0)
-  const [operationalConsent, setOperationalConsent] = useState(false)
   const [rememberDetails, setRememberDetails] = useState(false)
-  const [form, setForm] = useState<CheckoutForm>({
-    phone: '',
-    name: '',
-    address: '',
-    landmark: '',
-    payment: 'momo',
-  })
+  const [payment, setPayment] = useState<'momo' | 'cash'>('momo')
+  const [location, setLocation] = useState<DeliveryLocation | null>(null)
   const [session, setSession] = useState<CustomerSession | null>(null)
   const [authOpen, setAuthOpen] = useState(false)
   const idempotencyKeyRef = useRef('')
   const checkoutTotal = totalPrice + Number(branch.delivery_fee || 0)
 
-  // The verified account phone is the authoritative SMS destination, so the
-  // checkout form no longer asks for it.
+  // The verified account supplies both the phone (SMS destination) and the
+  // name, so checkout asks for neither. The last delivery address is restored
+  // from this device when the customer opted to remember it.
   useEffect(() => {
     setSession(getCustomerSession())
+    try {
+      const saved = window.localStorage.getItem(SAVED_ADDRESS_KEY)
+      if (saved) {
+        setLocation(JSON.parse(saved) as DeliveryLocation)
+        setRememberDetails(true)
+      }
+    } catch {
+      window.localStorage.removeItem(SAVED_ADDRESS_KEY)
+    }
   }, [])
   const minimumRemaining = Math.max(0, Number(branch.minimum_order || 0) - totalPrice)
 
-  const handleFieldChange = (field: keyof CheckoutForm, value: string) => {
-    setForm(prev => ({ ...prev, [field]: value }))
+  const handlePaymentChange = (method: 'momo' | 'cash') => {
+    setPayment(method)
+    setError('')
+  }
+
+  const handleLocationChange = (next: DeliveryLocation | null) => {
+    setLocation(next)
     setError('')
   }
 
@@ -83,19 +87,11 @@ export default function CartSidebar({
       setAuthOpen(true)
       return false
     }
-    if (!form.address.trim()) { setError('Please enter your delivery address'); return false }
-    if (!operationalConsent) {
-      setError('Please allow operational updates for this order')
+    if (!location || location.address.trim().length < 3) {
+      setError('Please choose your delivery address')
       return false
     }
     return true
-  }
-
-  const normalisePhone = (phone: string): string => {
-    const clean = phone.replace(/\s/g, '')
-    if (clean.startsWith('0')) return '233' + clean.slice(1)
-    if (clean.startsWith('+')) return clean.slice(1)
-    return clean
   }
 
   const handlePlaceOrder = async () => {
@@ -122,16 +118,18 @@ export default function CartSidebar({
     }
 
     const payload = {
-      customer_phone: session?.customer.phone || normalisePhone(form.phone),
-      customer_name: form.name.trim() || null,
-      delivery_address: form.address.trim(),
+      customer_phone: session?.customer.phone || '',
+      customer_name: session?.customer.name || session?.customer.username || null,
+      delivery_address: location!.address.trim(),
+      delivery_latitude: location!.latitude ?? null,
+      delivery_longitude: location!.longitude ?? null,
+      delivery_place_id: location!.placeId ?? null,
       items: orderItems,
       total_amount: checkoutTotal,
-      payment_method: form.payment,
-      notes: form.landmark.trim() || null,
+      payment_method: payment,
       branch_id: branch.id,
       idempotency_key: idempotencyKeyRef.current,
-      whatsapp_consent: operationalConsent,
+      whatsapp_consent: true,
       channel: 'web',
     }
 
@@ -161,16 +159,13 @@ export default function CartSidebar({
       setStep('success')
       trackEvent(apiUrl, 'checkout_completed', branch.id, {
         order_total: Number(data.total_amount || checkoutTotal),
-        payment_method: form.payment,
+        payment_method: payment,
       })
       idempotencyKeyRef.current = ''
       if (rememberDetails) {
-        window.localStorage.setItem(
-          'restaurant-customer-v1',
-          JSON.stringify({ phone: form.phone, name: form.name, address: form.address })
-        )
+        window.localStorage.setItem(SAVED_ADDRESS_KEY, JSON.stringify(location))
       } else {
-        window.localStorage.removeItem('restaurant-customer-v1')
+        window.localStorage.removeItem(SAVED_ADDRESS_KEY)
       }
       onClear()
     } catch (err: unknown) {
@@ -189,7 +184,9 @@ export default function CartSidebar({
     setWhatsappReceiptSent(null)
     setConfirmedTotal(0)
     idempotencyKeyRef.current = ''
-    setForm({ phone: '', name: '', address: '', landmark: '', payment: 'momo' })
+    setPayment('momo')
+    // A remembered address survives the reset so the next order is quicker.
+    if (!rememberDetails) setLocation(null)
   }
 
   return (
@@ -213,7 +210,7 @@ export default function CartSidebar({
           {items.length > 0 && step === 'cart' && (
             <button
               onClick={onClear}
-              className="text-xs font-bold text-white/60 transition hover:text-[#f7b32b]"
+              className="-my-2 flex min-h-[44px] items-center px-1 text-xs font-bold text-white/60 transition hover:text-[#f7b32b]"
             >
               Clear all
             </button>
@@ -231,7 +228,7 @@ export default function CartSidebar({
       </div>
 
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="sheet-scroll flex-1 overflow-y-auto">
 
         {/* ── CART STEP ── */}
         {step === 'cart' && (
@@ -268,19 +265,25 @@ export default function CartSidebar({
                         GHS {(item.price * item.quantity).toFixed(2)}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1.5 rounded-full bg-white/10 px-2 py-1">
+                    {/* Steppers get a real 36px hit area — they are the most
+                        tapped control in the cart. */}
+                    <div className="flex items-center rounded-full bg-white/10 px-0.5">
                       <button
                         onClick={() => onRemove(item.cartKey)}
-                        className="text-white/60 transition hover:text-white active:scale-90"
+                        aria-label={`Remove one ${item.name}`}
+                        className="flex h-9 w-9 items-center justify-center rounded-full text-white/60 transition hover:text-white active:scale-90"
                       >
-                        <Minus size={11} strokeWidth={3} />
+                        <Minus size={14} strokeWidth={3} />
                       </button>
-                      <span className="w-4 text-center text-xs font-black">{item.quantity}</span>
+                      <span className="w-5 text-center text-sm font-black tabular-nums">
+                        {item.quantity}
+                      </span>
                       <button
                         onClick={() => onAdd(item)}
-                        className="text-[#f7b32b] transition hover:text-[#ffc852] active:scale-90"
+                        aria-label={`Add another ${item.name}`}
+                        className="flex h-9 w-9 items-center justify-center rounded-full text-[#f7b32b] transition hover:text-[#ffc852] active:scale-90"
                       >
-                        <Plus size={11} strokeWidth={3} />
+                        <Plus size={14} strokeWidth={3} />
                       </button>
                     </div>
                   </div>
@@ -293,53 +296,32 @@ export default function CartSidebar({
         {/* ── CHECKOUT STEP ── */}
         {step === 'checkout' && (
           <div className="space-y-4 px-4 py-4">
-            <p className="text-sm text-white/70">
-              Ordering from <strong className="text-white">{branch.name}</strong>. Your receipt and live tracking are sent to your verified number.
-            </p>
-
-            {/* Verified account number — no longer retyped at every checkout. */}
+            {/* Name and number both come from the verified account — neither is
+                retyped at checkout. */}
             {session && (
-              <div className="flex items-center gap-3 rounded-xl border border-[#f7b32b]/25 bg-[#f7b32b]/10 px-3 py-3">
-                <ShieldCheck size={18} className="flex-shrink-0 text-[#f7b32b]" />
-                <div className="min-w-0">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-white/70">
-                    Verified number
-                  </p>
-                  <p className="truncate text-sm font-black text-white">
-                    {formatGhanaPhone(session.customer.phone)}
-                  </p>
-                </div>
+              <div className="flex items-center gap-2.5 rounded-xl border border-[#f7b32b]/25 bg-[#f7b32b]/10 px-3 py-2.5">
+                <ShieldCheck size={16} className="flex-shrink-0 text-[#f7b32b]" />
+                <p className="min-w-0 truncate text-xs text-white/80">
+                  <strong className="font-black text-white">
+                    {session.customer.name || session.customer.username}
+                  </strong>
+                  {' · '}
+                  {formatGhanaPhone(session.customer.phone)}
+                  {' · '}
+                  {branch.name}
+                </p>
               </div>
             )}
 
-            {[
-              { label: 'Your Name (optional)', field: 'name' as const, type: 'text', placeholder: 'e.g. Kofi Mensah', max: 100 },
-              { label: 'Landmark / Delivery Note', field: 'landmark' as const, type: 'text', placeholder: 'e.g. Call at main gate', max: 500 },
-            ].map(({ label, field, type, placeholder, max }) => (
-              <div key={field}>
-                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-white/70">{label}</label>
-                <input
-                  type={type}
-                  placeholder={placeholder}
-                  maxLength={max}
-                  value={form[field]}
-                  onChange={e => handleFieldChange(field, e.target.value)}
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/50 outline-none transition focus:border-[#f7b32b] focus:ring-1 focus:ring-[#f7b32b]"
-                />
-              </div>
-            ))}
-
-            <div>
-              <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-white/70">Delivery Address *</label>
-              <textarea
-                placeholder="e.g. House 5, Kanda Highway, near Total filling station"
-                maxLength={500}
-                value={form.address}
-                onChange={e => handleFieldChange('address', e.target.value)}
-                rows={3}
-                className="w-full resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/50 outline-none transition focus:border-[#f7b32b] focus:ring-1 focus:ring-[#f7b32b]"
-              />
-            </div>
+            <AddressField
+              value={location}
+              onChange={handleLocationChange}
+              center={
+                branch.latitude != null && branch.longitude != null
+                  ? { lat: branch.latitude, lng: branch.longitude }
+                  : undefined
+              }
+            />
 
             <div>
               <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/70">Payment Method *</label>
@@ -347,9 +329,9 @@ export default function CartSidebar({
                 {(['momo', 'cash'] as const).map(method => (
                   <button
                     key={method}
-                    onClick={() => handleFieldChange('payment', method)}
-                    className={`rounded-xl border py-3 text-xs font-bold transition-all ${
-                      form.payment === method
+                    onClick={() => handlePaymentChange(method)}
+                    className={`rounded-xl border py-4 text-sm font-bold transition-all sm:py-3 sm:text-xs ${
+                      payment === method
                         ? 'border-[#f7b32b] bg-[#f7b32b]/15 text-[#f7b32b]'
                         : 'border-white/10 text-white/70 hover:border-white/25'
                     }`}
@@ -380,24 +362,27 @@ export default function CartSidebar({
               </div>
             </div>
 
-            <label className="flex items-start gap-2 rounded-xl border border-white/10 p-3 text-xs text-white/70">
-              <input
-                type="checkbox"
-                checked={operationalConsent}
-                onChange={e => setOperationalConsent(e.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 accent-[#f7b32b]"
-              />
-              <span>Send my receipt and order-status updates to this WhatsApp number.</span>
-            </label>
+            {/* Stated, not asked: the receipt goes out automatically to the
+                number the account already verified. */}
+            <p className="flex items-start gap-2 rounded-xl border border-white/10 p-3 text-xs text-white/70">
+              <MessageCircleMore size={14} className="mt-0.5 flex-shrink-0 text-[#f7b32b]" />
+              <span>
+                Your receipt and tracking link are texted to{' '}
+                <strong className="font-bold text-white">
+                  {session ? formatGhanaPhone(session.customer.phone) : 'your verified number'}
+                </strong>
+                .
+              </span>
+            </p>
 
-            <label className="flex items-start gap-2 px-1 text-xs text-white/65">
+            <label className="flex items-start gap-2.5 px-1 py-1.5 text-xs text-white/65">
               <input
                 type="checkbox"
                 checked={rememberDetails}
                 onChange={e => setRememberDetails(e.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 accent-[#f7b32b]"
+                className="mt-px h-5 w-5 flex-shrink-0 accent-[#f7b32b]"
               />
-              <span>Remember my contact details on this device for faster checkout.</span>
+              <span>Remember this address on this device for faster checkout.</span>
             </label>
 
             {error && (
@@ -413,7 +398,7 @@ export default function CartSidebar({
             <h3 className="mb-2 text-xl font-black text-white">Order Confirmed!</h3>
             <p className="mb-6 text-sm text-white/70">
               {whatsappReceiptSent
-                ? 'Your receipt and private tracking link have been sent to WhatsApp.'
+                ? 'Your receipt and private tracking link have been texted to you.'
                 : 'Use the tracking button below to follow your order.'}
             </p>
             <div className="mb-6 w-full rounded-xl bg-white/5 p-4 text-left">
@@ -453,7 +438,7 @@ export default function CartSidebar({
 
       {/* ── FOOTER / CTA ── */}
       {step === 'cart' && (
-        <div className="border-t border-white/10 px-4 py-4">
+        <div className="pb-safe border-t border-white/10 px-4 pt-4">
           {items.length > 0 && (
             <div className="mb-3 space-y-1.5 text-sm">
               <div className="flex justify-between text-white/70">
@@ -502,7 +487,7 @@ export default function CartSidebar({
       )}
 
       {step === 'checkout' && (
-        <div className="flex gap-2 border-t border-white/10 px-4 py-4">
+        <div className="pb-safe flex gap-2 border-t border-white/10 px-4 pt-4">
           <button
             onClick={() => setStep('cart')}
             disabled={loading}

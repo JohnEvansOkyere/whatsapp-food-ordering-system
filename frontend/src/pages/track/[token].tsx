@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Head from 'next/head'
 import { useRouter } from 'next/router'
 import Link from 'next/link'
@@ -120,6 +120,13 @@ const PIPELINE: Array<{
   },
 ]
 
+/** Nothing more will happen to these orders, so polling can stop. */
+const TERMINAL_STATUSES = new Set<OrderStatus>([
+  'delivered',
+  'cancelled',
+  'rejected',
+])
+
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString('en-GH', {
     hour: 'numeric',
@@ -178,13 +185,32 @@ export default function TrackOrderPage() {
     [apiUrl, token]
   )
 
+  // Polling is read through a ref so the interval is never torn down and
+  // rebuilt on every refresh.
+  const pollable = useRef(true)
+  pollable.current = !order || !TERMINAL_STATUSES.has(order.status)
+
   useEffect(() => {
     if (!router.isReady || !token) return
     void loadOrder()
+
+    // A backgrounded tab and a finished order are both reasons not to spend a
+    // customer's mobile data every 10 seconds. Coming back to the page pulls a
+    // fresh copy immediately, so nothing is stale on return.
     const interval = window.setInterval(() => {
+      if (document.hidden || !pollable.current) return
       void loadOrder(true)
     }, 10000)
-    return () => window.clearInterval(interval)
+
+    const onVisible = () => {
+      if (!document.hidden && pollable.current) void loadOrder(true)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [loadOrder, router.isReady, token])
 
   const completedStatuses = useMemo(
@@ -253,8 +279,8 @@ export default function TrackOrderPage() {
         />
       </Head>
 
-      <div className="min-h-screen bg-[#fff8ef] text-[#1b0b04]">
-        <header className="border-b border-black/[0.06] bg-white/90 backdrop-blur-xl">
+      <div className="min-h-[100svh] bg-[#fff8ef] text-[#1b0b04]">
+        <header className="pt-safe border-b border-black/[0.06] bg-white/90 backdrop-blur-xl">
           <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-4 sm:px-6">
             <Link href="/" className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#1b0b04] text-[#f7b32b]">
@@ -284,7 +310,7 @@ export default function TrackOrderPage() {
           </div>
         </header>
 
-        <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6 sm:py-12">
+        <main className="mx-auto max-w-4xl px-4 pb-[calc(2rem+env(safe-area-inset-bottom))] pt-8 sm:px-6 sm:pb-12 sm:pt-12">
           {loading && (
             <div className="space-y-4">
               <div className="h-52 animate-pulse rounded-[32px] bg-[#eadbc9]" />

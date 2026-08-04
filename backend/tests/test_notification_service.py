@@ -113,7 +113,7 @@ def test_sms_failure_does_not_suppress_whatsapp(monkeypatch):
         return True
 
     async def failing_sms(_order):
-        raise RuntimeError("moolre unreachable")
+        raise RuntimeError("arkesel unreachable")
 
     monkeypatch.setattr(notification_service, "get_supabase", lambda: database)
     monkeypatch.setattr(

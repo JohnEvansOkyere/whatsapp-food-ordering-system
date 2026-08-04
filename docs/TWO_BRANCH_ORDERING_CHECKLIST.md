@@ -262,6 +262,14 @@ These values must be confirmed before production seed data is finalized.
 - [x] Prevent invalid or skipped transitions on both frontend and backend.
 - [x] Disable repeated actions while a status mutation is in flight.
 - [x] Handle two staff members acting on the same order safely.
+- [x] Query live, attention, and completed queues separately so completed volume
+  cannot hide an older active order.
+- [x] Use server-side search and pagination for completed order history.
+- [x] Load full order details only when staff open an order.
+- [x] Return only status actions permitted for the signed-in staff role.
+- [x] Preserve the exact operational stage when resolving a delay or
+  cancellation request.
+- [x] Require delivery orders to pass through out-for-delivery before delivery.
 - [x] Show customer, address, landmark, phone, branch, items, modifiers, notes,
   payment state, and event history.
 - [x] Add branch-specific sold-out controls.

@@ -1,17 +1,38 @@
 {
-  "name": "Accra Eats Ordering",
-  "short_name": "Accra Eats",
+  "name": "HallMark Cafe Ordering",
+  "short_name": "HallMark Cafe",
   "description": "Order fresh food from Ashesi University or Abelemkpe and track every step.",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#fffaf4",
-  "theme_color": "#1a0a00",
+  "orientation": "portrait",
+  "background_color": "#111111",
+  "theme_color": "#111111",
   "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
     {
       "src": "/icons/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }
