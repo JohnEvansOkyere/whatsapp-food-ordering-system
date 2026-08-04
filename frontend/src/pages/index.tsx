@@ -42,6 +42,22 @@ interface ApiMenuItem {
 
 const FALLBACK_MENU_BY_ID = new Map(MENU_ITEMS.map(item => [item.id, item]))
 
+/**
+ * A hanging request on a mobile network is worse than a failed one: without a
+ * cap the branch picker sits on its skeleton forever instead of falling back to
+ * the launch data it already has. AbortController rather than
+ * AbortSignal.timeout — this has to work in WhatsApp's in-app browser too.
+ */
+async function fetchWithTimeout(url: string, ms = 6000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), ms)
+  try {
+    return await fetch(url, { signal: controller.signal })
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
 function toUiMenuItem(item: ApiMenuItem): MenuItem {
   const fallback = FALLBACK_MENU_BY_ID.get(item.id)
   return {
@@ -123,23 +139,25 @@ function MenuItemRow({
             {item.name}
           </h3>
           <div className="flex-shrink-0" onClick={e => e.stopPropagation()}>
+            {/* Thumb-sized targets: 36px on phones, trimmed at the 2-column
+                breakpoint where a mouse is doing the work. */}
             {quantity === 0 ? (
               <button
                 onClick={onAdd}
                 disabled={item.soldOut}
                 aria-label={`Add ${item.name}`}
-                className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-[#f7b32b] text-[#f7b32b] sm:h-7 sm:w-7 transition-all hover:bg-[#f7b32b] hover:text-[#1a0a00] active:scale-90 disabled:cursor-not-allowed disabled:opacity-30"
+                className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-[#f7b32b] text-[#f7b32b] sm:h-7 sm:w-7 transition-all hover:bg-[#f7b32b] hover:text-[#1a0a00] active:scale-90 disabled:cursor-not-allowed disabled:opacity-30"
               >
                 <Plus size={16} strokeWidth={3} />
               </button>
             ) : (
-              <div className="flex items-center gap-1 rounded-full bg-[#f7b32b] px-1.5 py-1">
+              <div className="flex items-center rounded-full bg-[#f7b32b] px-0.5">
                 <button
                   onClick={onRemove}
                   aria-label={`Remove one ${item.name}`}
-                  className="text-[#1a0a00] transition active:scale-90"
+                  className="flex h-9 w-9 items-center justify-center rounded-full text-[#1a0a00] transition active:scale-90 sm:h-7 sm:w-7"
                 >
-                  <Minus size={13} strokeWidth={3} />
+                  <Minus size={14} strokeWidth={3} />
                 </button>
                 <span className="w-4 text-center text-xs font-black tabular-nums text-[#1a0a00]">
                   {quantity}
@@ -147,9 +165,9 @@ function MenuItemRow({
                 <button
                   onClick={onAdd}
                   aria-label={`Add another ${item.name}`}
-                  className="text-[#1a0a00] transition active:scale-90"
+                  className="flex h-9 w-9 items-center justify-center rounded-full text-[#1a0a00] transition active:scale-90 sm:h-7 sm:w-7"
                 >
-                  <Plus size={13} strokeWidth={3} />
+                  <Plus size={14} strokeWidth={3} />
                 </button>
               </div>
             )}
@@ -180,7 +198,8 @@ export default function MenuPage() {
   const [selectedProduct, setSelectedProduct] = useState<MenuItem | null>(null)
   const [online, setOnline] = useState(true)
   const [cartOpen, setCartOpen] = useState(false)
-  const categoryRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  // Sections, not divs — the callback ref below hands back an HTMLElement.
+  const categoryRefs = useRef<Record<string, HTMLElement | null>>({})
   const cart = useCart()
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -201,7 +220,7 @@ export default function MenuPage() {
     async function loadBranches() {
       let nextBranches = FALLBACK_BRANCHES
       try {
-        const res = await fetch(`${apiUrl}/public/branches`)
+        const res = await fetchWithTimeout(`${apiUrl}/public/branches`)
         if (!res.ok) throw new Error(`Branch request failed with ${res.status}`)
         const data = await res.json()
         if (Array.isArray(data.items) && data.items.length > 0) nextBranches = data.items
@@ -239,7 +258,7 @@ export default function MenuPage() {
     async function loadMenu() {
       try {
         const params = new URLSearchParams({ branch_id: activeBranch.id })
-        const res = await fetch(`${apiUrl}/public/menu?${params.toString()}`)
+        const res = await fetchWithTimeout(`${apiUrl}/public/menu?${params.toString()}`)
         if (!res.ok) throw new Error(`Menu request failed with status ${res.status}`)
         const data = await res.json()
         if (!Array.isArray(data.items)) throw new Error('Menu payload is invalid')
@@ -333,7 +352,6 @@ export default function MenuPage() {
       <Head>
         <title>{`${RESTAURANT.name} — Order fresh food online`}</title>
         <meta name="description" content={RESTAURANT.tagline} />
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
       </Head>
 
       {branchPickerOpen && (
@@ -364,7 +382,9 @@ export default function MenuPage() {
           />
 
           {/* ── TOP NAVBAR (sticky, appears after scrolling past hero) ── */}
-          <header id="menu-section" className="sticky top-0 z-50 bg-[#111111]/95 backdrop-blur-xl border-b border-white/5">
+          {/* pt-safe: the status bar is translucent in the installed app, so a
+              stuck header would otherwise sit underneath it. */}
+          <header id="menu-section" className="pt-safe sticky top-0 z-50 bg-[#111111]/95 backdrop-blur-xl border-b border-white/5">
             <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
               {/* Logo */}
               <div className="flex items-center gap-3">
@@ -443,8 +463,14 @@ export default function MenuPage() {
             </div>
           </header>
 
-          {/* ── MAIN CONTENT (menu left + cart right) ── */}
-          <div className="mx-auto flex max-w-4xl gap-6 px-4 pb-10 pt-5 sm:px-6">
+          {/* ── MAIN CONTENT (menu left + cart right) ──
+              The extra bottom padding on phones keeps the footer clear of the
+              floating cart bar, which is fixed over this content. */}
+          <div
+            className={`mx-auto flex max-w-4xl gap-6 px-4 pt-5 sm:px-6 ${
+              cart.totalItems > 0 ? 'pb-32 lg:pb-10' : 'pb-10'
+            }`}
+          >
 
             {/* ── LEFT: MENU CONTENT ── */}
             <main className="min-w-0 flex-1">
@@ -521,7 +547,9 @@ export default function MenuPage() {
                 Object.entries(groupedItems).map(([category, items]) => (
                   <section
                     key={category}
-                    className="mb-8"
+                    // Clears the sticky header + category tabs, which would
+                    // otherwise sit on top of the heading just scrolled to.
+                    className="mb-8 scroll-mt-[124px]"
                     ref={el => { categoryRefs.current[category] = el }}
                   >
                     {/* Section Header */}
@@ -583,7 +611,7 @@ export default function MenuPage() {
 
           {/* ── MOBILE FLOATING CART BAR ── */}
           {cart.totalItems > 0 && !cartOpen && (
-            <div className="fixed bottom-5 left-4 right-4 z-40 lg:hidden">
+            <div className="mb-safe fixed bottom-0 left-4 right-4 z-40 lg:hidden">
               <button
                 onClick={() => { setSelectedProduct(null); setCartOpen(true) }}
                 className="flex w-full items-center justify-between rounded-2xl bg-[#f7b32b] px-5 py-4 shadow-2xl shadow-[#f7b32b]/30 transition active:scale-[.98]"

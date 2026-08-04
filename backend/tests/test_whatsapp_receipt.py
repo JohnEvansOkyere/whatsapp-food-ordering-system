@@ -41,7 +41,7 @@ def _sample_order(order_number: str | None, tracking_code: str | None) -> OrderR
 
 
 def test_receipt_uses_order_number_and_tracking_code():
-    receipt = _build_receipt(_sample_order("ORD-8A8E1807", "TRK-8A8E1807"), "Veloxa Foods")
+    receipt = _build_receipt(_sample_order("ORD-8A8E1807", "TRK-8A8E1807"), "HallMark Cafe")
 
     assert "Order ID: *ORD-8A8E1807*" in receipt
     assert "Tracking: *TRK-8A8E1807*" in receipt
@@ -49,7 +49,7 @@ def test_receipt_uses_order_number_and_tracking_code():
 
 
 def test_receipt_falls_back_to_short_uuid_when_order_number_is_missing():
-    receipt = _build_receipt(_sample_order(None, None), "Veloxa Foods")
+    receipt = _build_receipt(_sample_order(None, None), "HallMark Cafe")
 
     assert "Order ID: *8A8E1807*" in receipt
     assert "Tracking:" not in receipt

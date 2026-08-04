@@ -123,9 +123,10 @@ Use this file as persistent project guidance before planning or changing code.
 - Always use the spelling `Abelemkpe` in code, database seeds, URLs, UI copy,
   documentation, and WhatsApp messages.
 - Customers place orders in the web app. WhatsApp carries the full receipt and
-  is the support channel; SMS (Moolre) carries a short copy of the tracking link
-  so it reaches any handset. Both are sent for each qualifying event — see the
-  2026-08-01 entry in `MEMORY.md`.
+  is the support channel; SMS (Arkesel, failing over to Moolre) carries a short
+  copy of the tracking link so it reaches any handset, and the verification
+  codes for phone sign-in. Both channels are sent for each qualifying event —
+  see the 2026-08-01 and 2026-08-04 entries in `MEMORY.md`.
 - The tracking link opens a mobile web page that can load inside WhatsApp's
   in-app browser. Do not claim that a WhatsApp message itself is a live-updating
   progress bar.

@@ -29,6 +29,49 @@ body {
   background: #111111;
   font-family: var(--font-body);
   color: white;
+  /* Stops iOS inflating body text when a phone is turned to landscape. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Phone-first interaction defaults ------------------------------------------
+   `manipulation` drops the double-tap-to-zoom wait, which is what makes the
+   quantity steppers feel laggy when tapped repeatedly, and the grey tap flash
+   fights the app's own :active states. */
+button,
+a,
+[role='button'] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* iOS Safari zooms the whole page when a focused input is under 16px, and it
+   does not zoom back out. Every text input therefore stays at 16px on phones —
+   the sizing utilities only take effect from the tablet breakpoint up. */
+@media (max-width: 639px) {
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* Bottom-anchored UI has to clear the iPhone home indicator. */
+.pb-safe {
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+}
+.mb-safe {
+  margin-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+}
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Sheets scroll on their own; without this a flick past the end scrolls the
+   menu behind them, or triggers pull-to-refresh mid-checkout. */
+.sheet-scroll {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Custom scrollbar — dark theme */
@@ -100,28 +143,6 @@ body {
 }
 
 /* Cinematic branch-selector entrance */
-.branch-background-slide {
-  position: absolute;
-  inset: -2%;
-  background-size: cover;
-  background-repeat: no-repeat;
-  opacity: 0;
-  transform: scale(1.15);
-  transition: opacity 1.4s ease-in-out;
-  will-change: transform, opacity;
-}
-
-.branch-background-slide.is-active {
-  z-index: 1;
-  opacity: 1;
-  animation: branchKenBurns 9s ease-in-out both;
-}
-
-@keyframes branchKenBurns {
-  from { transform: scale(1); }
-  to { transform: scale(1.15); }
-}
-
 .branch-entrance {
   opacity: 0;
   animation: branchEntrance 0.72s cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -138,49 +159,11 @@ body {
   }
 }
 
-.branch-status-pulse {
-  animation: branchStatusPulse 1.8s ease-out infinite;
-}
-
-@keyframes branchStatusPulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
-  }
-  35% {
-    box-shadow: 0 0 0 5px rgba(52, 211, 153, 0.13);
-  }
-}
-
-.branch-picker-grain {
-  opacity: 0.04;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.8'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  background-size: 180px 180px;
-  mix-blend-mode: soft-light;
-}
-
-@media (max-width: 640px) {
-  .branch-background-slide.is-active {
-    animation: none;
-    transform: scale(1.03);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .branch-background-slide,
-  .branch-background-slide.is-active {
-    animation: none;
-    transform: scale(1.03);
-  }
-
   .branch-entrance {
     opacity: 1;
     animation: none;
     transform: none;
-  }
-
-  .branch-status-pulse {
-    animation: none;
   }
 
   .branch-card,

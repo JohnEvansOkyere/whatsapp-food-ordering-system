@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers import admin, auth, customer_auth, menu, orders, public, webhook
 from app.services.rate_limit import rate_limit_sensitive_routes
+from app.services.logging_utils import install_credential_redaction
 from app.database import get_supabase
 import logging
 import os
@@ -12,6 +13,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
 )
+# Must run after basicConfig — it filters the handlers basicConfig created.
+install_credential_redaction()
 
 settings = get_settings()
 if settings.app_environment.lower() == "production" and (

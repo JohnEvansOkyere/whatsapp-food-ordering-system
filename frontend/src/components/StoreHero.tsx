@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import Image from 'next/image'
 import { ChevronDown } from 'lucide-react'
+import HeroMedia from './HeroMedia'
 import { Branch } from '@/lib/branches'
 import { getBranchHeroMedia } from '@/lib/branchHero'
+import { RESTAURANT } from '@/lib/menuData'
 
 interface StoreHeroProps {
   branch: Branch
@@ -11,94 +11,42 @@ interface StoreHeroProps {
 
 export default function StoreHero({ branch, onBrowse }: StoreHeroProps) {
   const media = getBranchHeroMedia(branch.slug)
-  const bgVideoRef = useRef<HTMLVideoElement>(null)
-  const fgVideoRef = useRef<HTMLVideoElement>(null)
-  const [ready, setReady] = useState(false)
-  const [reducedMotion, setReducedMotion] = useState(false)
-
-  useEffect(() => {
-    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
-    setReducedMotion(query.matches)
-    const handleChange = (event: MediaQueryListEvent) => setReducedMotion(event.matches)
-    query.addEventListener('change', handleChange)
-    return () => query.removeEventListener('change', handleChange)
-  }, [])
-
-  useEffect(() => {
-    if (reducedMotion) return
-    ;[bgVideoRef.current, fgVideoRef.current].forEach(video => {
-      if (!video) return
-      video.muted = true
-      video.playbackRate = 0.85
-    })
-  }, [reducedMotion, media.videoSrc])
 
   return (
-    <section className="relative isolate h-[100svh] min-h-[560px] max-h-[880px] w-full overflow-hidden bg-[#160a05] text-white">
-      {reducedMotion ? (
-        <Image
-          src={media.posterSrc}
-          alt=""
-          fill
-          priority
-          className="object-cover"
-        />
-      ) : (
-        <>
-          {/* Layer 1: blurred, scaled-up fill — masks empty space when the video's
-              aspect ratio doesn't match the section's */}
-          <video
-            ref={bgVideoRef}
-            className={`absolute inset-0 h-full w-full scale-[1.3] object-cover blur-[40px] brightness-[0.4] transition-opacity duration-1000 ${ready ? 'opacity-100' : 'opacity-0'}`}
-            src={media.videoSrc}
-            poster={media.posterSrc}
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="auto"
-            aria-hidden="true"
-          />
-          {/* Layer 2: the actual footage, framed rather than cropped */}
-          <video
-            ref={fgVideoRef}
-            className={`absolute inset-0 h-full w-full object-contain saturate-[.9] contrast-[1.05] transition-opacity duration-1000 ${ready ? 'opacity-100' : 'opacity-0'}`}
-            src={media.videoSrc}
-            poster={media.posterSrc}
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="auto"
-            onCanPlay={() => setReady(true)}
-            aria-hidden="true"
-          />
-        </>
-      )}
+    // Short of full height on phones on purpose: the top of the menu header
+    // stays visible, so the menu reads as reachable without the chevron.
+    <section className="relative isolate h-[86svh] min-h-[460px] max-h-[880px] w-full overflow-hidden bg-[#160a05] text-white sm:h-[100svh] sm:min-h-[560px]">
+      <HeroMedia media={media} />
 
-      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/60 to-black/75" />
-      <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-[#0c0503] to-transparent" />
+      {/* Kept light through the middle so the food stays the subject. */}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/30 to-black/80" />
 
-      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center px-6 text-center">
-        <h1
-          className="animate-hero-fade-up max-w-3xl text-4xl font-black leading-[0.98] sm:text-6xl lg:text-7xl"
-          style={{ fontFamily: 'var(--font-display)' }}
-        >
-          Where <span className="text-[#f7b32b]">Ghana</span> eats.
-        </h1>
+      {/* The shadow is inherited by both lines. A food still is far brighter
+          than the video this replaced, and it is bright in unpredictable
+          places, so the type carries its own contrast rather than the whole
+          photo being dimmed to suit it. */}
+      <div
+        className="absolute inset-0 z-10 flex flex-col items-center justify-center px-6 text-center"
+        style={{ textShadow: '0 2px 20px rgba(0,0,0,0.8), 0 1px 4px rgba(0,0,0,0.5)' }}
+      >
         <p
-          className="animate-hero-fade-up mt-5 text-xs font-bold uppercase tracking-[0.3em] text-white/70"
-          style={{ animationDelay: '200ms' }}
+          className="animate-hero-fade-up text-xs font-bold uppercase tracking-[0.34em] text-[#f6b51e]"
+        >
+          {RESTAURANT.name}
+        </p>
+        <h1
+          className="animate-hero-fade-up mt-3 max-w-3xl text-5xl font-black leading-[0.95] tracking-[-0.03em] sm:text-7xl"
+          style={{ animationDelay: '160ms', fontFamily: 'var(--font-display)' }}
         >
           {branch.name}
-        </p>
+        </h1>
       </div>
 
       <button
         type="button"
         onClick={onBrowse}
         aria-label="Scroll to the menu"
-        className="absolute bottom-7 left-1/2 z-10 flex -translate-x-1/2 animate-bounce flex-col items-center text-white/60 transition hover:text-white"
+        className="absolute bottom-3 left-1/2 z-10 flex h-12 w-12 -translate-x-1/2 animate-bounce items-center justify-center text-white/60 transition hover:text-white"
       >
         <ChevronDown size={26} strokeWidth={2.5} />
       </button>

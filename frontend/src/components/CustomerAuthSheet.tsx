@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Lock, Phone, ShieldCheck, User, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Loader2, Lock, Phone, ShieldCheck, User, UserPlus, X } from 'lucide-react'
 import {
   CustomerSession,
   errorMessage,
@@ -26,14 +27,19 @@ export default function CustomerAuthSheet({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [unregistered, setUnregistered] = useState(false)
   const [cooldown, setCooldown] = useState(0)
 
+  const [name, setName] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
   const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
+  const [mounted, setMounted] = useState(false)
   const pendingPhone = useRef('')
+
+  useEffect(() => setMounted(true), [])
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -62,6 +68,7 @@ export default function CustomerAuthSheet({
     setMode(next)
     setError('')
     setNotice('')
+    setUnregistered(false)
   }
 
   const handleSignup = async () => {
@@ -76,6 +83,8 @@ export default function CustomerAuthSheet({
           password,
           password_confirmation: passwordConfirmation,
           phone,
+          // Captured once here so checkout never has to ask for it again.
+          name: name.trim() || null,
         }),
       })
       if (!res.ok) throw new Error(await errorMessage(res, 'Could not create your account'))
@@ -134,12 +143,19 @@ export default function CustomerAuthSheet({
   const handleLogin = async () => {
     setLoading(true)
     setError('')
+    setUnregistered(false)
     try {
       const res = await fetch(`${apiUrl}/auth/customer/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone }),
       })
+      if (res.status === 404) {
+        // Unknown number: steer to signup instead of showing a bare error.
+        setNotice('')
+        setUnregistered(true)
+        return
+      }
       if (!res.ok) throw new Error(await errorMessage(res, 'Could not sign you in'))
       const data = await res.json()
       pendingPhone.current = phone
@@ -170,14 +186,17 @@ export default function CustomerAuthSheet({
       ? code.trim().length >= 4
       : phone.trim().length >= 9
 
-  if (!open) return null
+  if (!open || !mounted) return null
 
   const fieldClass =
-    'w-full rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-sm text-white placeholder-white/40 outline-none transition focus:border-[#f7b32b] focus:ring-1 focus:ring-[#f7b32b]'
+    'w-full rounded-xl border border-white/10 bg-white/5 px-3 py-3.5 text-base text-white placeholder-white/40 outline-none transition focus:border-[#f7b32b] focus:ring-1 focus:ring-[#f7b32b] sm:py-3 sm:text-sm'
   const labelClass =
     'mb-1.5 block text-xs font-bold uppercase tracking-wider text-white/70'
 
-  return (
+  // Rendered into <body>: on phones this sheet is opened from inside the cart
+  // sheet, whose slide transform would otherwise become the containing block
+  // for these fixed layers and clip the whole dialog inside the cart.
+  return createPortal(
     <>
       <button
         type="button"
@@ -189,7 +208,7 @@ export default function CustomerAuthSheet({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="fixed inset-x-0 bottom-0 z-[91] mx-auto max-h-[92svh] w-full max-w-md overflow-y-auto rounded-t-[28px] border-t border-white/10 bg-[#161616] text-white shadow-2xl sm:bottom-auto sm:top-1/2 sm:-translate-y-1/2 sm:rounded-[28px]"
+        className="sheet-scroll fixed inset-x-0 bottom-0 z-[91] mx-auto max-h-[92svh] w-full max-w-md overflow-y-auto rounded-t-[28px] border-t border-white/10 bg-[#161616] text-white shadow-2xl sm:bottom-auto sm:top-1/2 sm:-translate-y-1/2 sm:rounded-[28px]"
       >
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
           <div className="flex items-center gap-2.5">
@@ -210,14 +229,14 @@ export default function CustomerAuthSheet({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-white/10 text-white/80 transition hover:bg-white/20"
+            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-white/10 text-white/80 transition hover:bg-white/20"
           >
             <X size={16} strokeWidth={2.5} />
           </button>
         </div>
 
         <form
-          className="space-y-4 px-5 py-5"
+          className="pb-safe space-y-4 px-5 pt-5"
           onSubmit={event => {
             event.preventDefault()
             submit()
@@ -225,6 +244,20 @@ export default function CustomerAuthSheet({
         >
           {mode === 'signup' && (
             <>
+              <div>
+                <label className={labelClass} htmlFor="cust-name">
+                  Your name
+                </label>
+                <input
+                  id="cust-name"
+                  autoComplete="name"
+                  maxLength={100}
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="e.g. Kofi Mensah"
+                  className={fieldClass}
+                />
+              </div>
               <div>
                 <label className={labelClass} htmlFor="cust-username">
                   Username
@@ -290,7 +323,10 @@ export default function CustomerAuthSheet({
                   type="tel"
                   autoComplete="tel"
                   value={phone}
-                  onChange={e => setPhone(e.target.value)}
+                  onChange={e => {
+                    setPhone(e.target.value)
+                    setUnregistered(false)
+                  }}
                   placeholder="e.g. 0244123456"
                   className={`${fieldClass} pl-9`}
                 />
@@ -316,20 +352,46 @@ export default function CustomerAuthSheet({
                 value={code}
                 onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
                 placeholder="••••••"
-                className={`${fieldClass} text-center text-2xl font-black tracking-[0.5em]`}
+                // Inline size: the 16px mobile floor in globals.css would
+                // otherwise shrink the one field that should be oversized.
+                style={{ fontSize: '1.5rem' }}
+                className={`${fieldClass} text-center font-black tracking-[0.5em]`}
               />
               <button
                 type="button"
                 onClick={handleResend}
                 disabled={cooldown > 0 || loading}
-                className="mt-3 text-xs font-bold text-[#f7b32b] transition disabled:text-white/40"
+                className="mt-2 inline-flex min-h-[44px] items-center text-sm font-bold text-[#f7b32b] transition disabled:text-white/40"
               >
                 {cooldown > 0 ? `Resend code in ${cooldown}s` : 'Resend code'}
               </button>
             </div>
           )}
 
-          {notice && !error && (
+          {unregistered && (
+            <div
+              role="alert"
+              className="rounded-xl border border-[#f7b32b]/30 bg-[#f7b32b]/10 px-3 py-3"
+            >
+              <p className="text-xs font-bold text-[#f7b32b]">
+                You don&apos;t have an account yet
+              </p>
+              <p className="mt-1 text-xs text-white/70">
+                No account uses {formatGhanaPhone(phone) || 'this number'} yet. Create one
+                to place your order and get updates by SMS.
+              </p>
+              <button
+                type="button"
+                onClick={() => reset('signup')}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-[#f7b32b] py-2.5 text-xs font-black text-[#1a0a00] transition hover:bg-[#ffc852]"
+              >
+                <UserPlus size={14} strokeWidth={2.5} />
+                Create an account
+              </button>
+            </div>
+          )}
+
+          {notice && !error && !unregistered && (
             <p className="rounded-xl bg-[#f7b32b]/10 px-3 py-2.5 text-xs text-[#f7b32b]">
               {notice}
             </p>
@@ -343,26 +405,28 @@ export default function CustomerAuthSheet({
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={!canSubmit || loading}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#f7b32b] py-3.5 text-sm font-black text-[#1a0a00] transition hover:bg-[#ffc852] disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {loading && <Loader2 size={16} className="animate-spin" />}
-            {mode === 'signup'
-              ? 'Send verification code'
-              : mode === 'verify'
-              ? 'Verify and continue'
-              : 'Text me a sign-in code'}
-          </button>
+          {!unregistered && (
+            <button
+              type="submit"
+              disabled={!canSubmit || loading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#f7b32b] py-3.5 text-sm font-black text-[#1a0a00] transition hover:bg-[#ffc852] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {loading && <Loader2 size={16} className="animate-spin" />}
+              {mode === 'signup'
+                ? 'Send verification code'
+                : mode === 'verify'
+                ? 'Verify and continue'
+                : 'Text me a sign-in code'}
+            </button>
+          )}
 
           {mode !== 'verify' && (
-            <p className="text-center text-xs text-white/70">
+            <p className="text-center text-sm text-white/70">
               {mode === 'signup' ? 'Already have an account?' : 'New here?'}{' '}
               <button
                 type="button"
                 onClick={() => reset(mode === 'signup' ? 'login' : 'signup')}
-                className="font-bold text-[#f7b32b]"
+                className="inline-flex min-h-[44px] items-center px-1 font-bold text-[#f7b32b]"
               >
                 {mode === 'signup' ? 'Sign in' : 'Create one'}
               </button>
@@ -370,6 +434,7 @@ export default function CustomerAuthSheet({
           )}
         </form>
       </section>
-    </>
+    </>,
+    document.body
   )
 }

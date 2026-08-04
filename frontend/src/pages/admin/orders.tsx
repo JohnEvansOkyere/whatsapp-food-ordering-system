@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Head from 'next/head'
-import { AlertCircle, Clock3, PackageCheck, RefreshCw, ShoppingBag, Truck } from 'lucide-react'
+import { AlertCircle, Clock3, MapPin, PackageCheck, RefreshCw, ShoppingBag, Truck } from 'lucide-react'
 import { getStaffSession, staffFetch } from '@/lib/staffAuth'
 
 type OrderStatus =
@@ -56,6 +56,8 @@ interface OrderDetail extends OrderListItem {
   customer_phone: string
   customer_name?: string | null
   delivery_address: string
+  delivery_latitude?: number | null
+  delivery_longitude?: number | null
   items: OrderItem[]
   subtotal_amount: number
   notes?: string | null
@@ -546,6 +548,24 @@ export default function AdminOrdersPage() {
                     <div className="mt-4 rounded-2xl border border-orange-100 p-4">
                       <p className="text-xs uppercase tracking-[0.2em] text-gray-500">Delivery Address</p>
                       <p className="mt-2 text-sm font-medium">{selectedOrder.delivery_address}</p>
+                      {/* Only pinned addresses can be navigated to; typed ones
+                          leave the rider to call the customer. */}
+                      {selectedOrder.delivery_latitude != null &&
+                      selectedOrder.delivery_longitude != null ? (
+                        <a
+                          href={`https://www.google.com/maps/search/?api=1&query=${selectedOrder.delivery_latitude},${selectedOrder.delivery_longitude}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold text-brand-orange hover:underline"
+                        >
+                          <MapPin size={13} />
+                          Open pinned location in Maps
+                        </a>
+                      ) : (
+                        <p className="mt-2 text-xs text-gray-500">
+                          No map pin — call the customer for directions.
+                        </p>
+                      )}
                     </div>
                   </div>
 

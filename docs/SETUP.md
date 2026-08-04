@@ -24,7 +24,7 @@
 6. Copy:
    - `Access Token` → `META_ACCESS_TOKEN`
    - `Phone Number ID` → `META_PHONE_NUMBER_ID`
-7. Set `META_VERIFY_TOKEN` to any random string you choose (e.g. `accra_eats_verify_2024`)
+7. Set `META_VERIFY_TOKEN` to any random string you choose (e.g. `hallmark_cafe_verify_2026`)
 8. Add your personal WhatsApp number as a test recipient
 
 **For production:** You'll need to submit the app for review and get a real business number. For the 1-month free trial, the test number is enough.
@@ -54,6 +54,7 @@
    - `NEXT_PUBLIC_API_URL` = your Render URL
    - `NEXT_PUBLIC_RESTAURANT_WHATSAPP` = owner WhatsApp number (no + or spaces, e.g. `233244123456`)
    - `NEXT_PUBLIC_RESTAURANT_NAME` = restaurant name
+   - `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` = Google Cloud key with Places API (New), Maps JavaScript API and Geocoding API enabled — powers checkout address search, "Use my location" and the pin confirmation map. Restrict it by HTTP referrer. Leave unset to fall back to a plain typed address field.
 5. Deploy → copy your Vercel URL
 
 ---

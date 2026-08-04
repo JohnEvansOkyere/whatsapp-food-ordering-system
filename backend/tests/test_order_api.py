@@ -10,6 +10,7 @@ import app.services.customer_service as customer_service
 import app.services.notification_service as notification_service
 import app.services.order_service as order_service
 from app.schemas.branch import PublicBranchSchema
+from app.schemas.order import OrderStatus
 
 
 ASHESI_BRANCH_ID = "a5010000-0000-4000-8000-000000000001"
@@ -47,8 +48,9 @@ SAMPLE_MENU = [
 
 
 class FakeResponse:
-    def __init__(self, data):
+    def __init__(self, data, count=None):
         self.data = data
+        self.count = count
 
 
 class FakeQuery:
@@ -56,13 +58,18 @@ class FakeQuery:
         self.supabase = supabase
         self.table_name = table_name
         self.filters = []
+        self.in_filters = []
+        self.or_filter = None
         self.sort_field = None
         self.sort_desc = False
         self.limit_value = None
+        self.range_value = None
+        self.include_count = False
         self.insert_payload = None
         self.update_payload = None
 
-    def select(self, _fields="*"):
+    def select(self, _fields="*", count=None):
+        self.include_count = count == "exact"
         return self
 
     def insert(self, payload):
@@ -77,6 +84,14 @@ class FakeQuery:
         self.filters.append((field, value))
         return self
 
+    def in_(self, field, values):
+        self.in_filters.append((field, set(values)))
+        return self
+
+    def or_(self, expression):
+        self.or_filter = expression
+        return self
+
     def order(self, field, desc=False):
         self.sort_field = field
         self.sort_desc = desc
@@ -84,6 +99,10 @@ class FakeQuery:
 
     def limit(self, value):
         self.limit_value = value
+        return self
+
+    def range(self, start, end):
+        self.range_value = (start, end)
         return self
 
     def execute(self):
@@ -111,12 +130,33 @@ class FakeQuery:
             copy.deepcopy(row)
             for row in table
             if all(row.get(field) == value for field, value in self.filters)
+            and all(row.get(field) in values for field, values in self.in_filters)
         ]
+        if self.or_filter:
+            first_clause = self.or_filter.split(",", 1)[0]
+            search = first_clause.split(".ilike.", 1)[1].strip("%").lower()
+            rows = [
+                row
+                for row in rows
+                if search in " ".join(
+                    str(row.get(field) or "")
+                    for field in (
+                        "order_number",
+                        "tracking_code",
+                        "customer_name_snapshot",
+                        "customer_phone_snapshot",
+                    )
+                ).lower()
+            ]
         if self.sort_field is not None:
             rows.sort(key=lambda row: row.get(self.sort_field) or "", reverse=self.sort_desc)
+        total = len(rows)
+        if self.range_value is not None:
+            start, end = self.range_value
+            rows = rows[start : end + 1]
         if self.limit_value is not None:
             rows = rows[: self.limit_value]
-        return FakeResponse(rows)
+        return FakeResponse(rows, total if self.include_count else None)
 
 
 class FakeSupabase:
@@ -402,6 +442,97 @@ def test_public_order_creation_writes_normalized_records(app, fake_backend):
     assert fake_backend.tables["order_events"][0]["event_type"] == "order_created"
 
 
+def test_order_without_a_consent_flag_is_accepted_and_still_texted(app, fake_backend):
+    """Placing the order is the consent — checkout no longer asks for a tick."""
+    response = api_request(
+        app,
+        "POST",
+        "/public/orders",
+        json={
+            "branch_id": ASHESI_BRANCH_ID,
+            "customer_phone": "233244123456",
+            "delivery_address": "Ashesi campus",
+            "items": [{"item_id": "jollof-chicken", "quantity": 1}],
+            "payment_method": "cash",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["whatsapp_receipt_sent"] is True
+    assert fake_backend.tables["orders"][0]["whatsapp_consent"] is True
+
+
+def test_map_pinned_address_stores_coordinates_for_the_rider(app, fake_backend):
+    response = api_request(
+        app,
+        "POST",
+        "/public/orders",
+        json={
+            "branch_id": ASHESI_BRANCH_ID,
+            "whatsapp_consent": True,
+            "customer_phone": "233244123456",
+            "delivery_address": "Berekuso Road, Berekuso, Ghana",
+            "delivery_latitude": 5.7594321,
+            "delivery_longitude": -0.2201456,
+            "delivery_place_id": "ChIJplaceid",
+            "items": [{"item_id": "jollof-chicken", "quantity": 1}],
+            "payment_method": "cash",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["delivery_latitude"] == 5.7594321
+    assert body["delivery_longitude"] == -0.2201456
+
+    stored_order = fake_backend.tables["orders"][0]
+    assert stored_order["delivery_latitude"] == 5.7594321
+    assert stored_order["delivery_longitude"] == -0.2201456
+    assert stored_order["delivery_place_id"] == "ChIJplaceid"
+
+
+def test_typed_address_without_a_map_match_still_places_the_order(app, fake_backend):
+    """Ghanaian addresses often have no Places match — checkout must not block."""
+    response = api_request(
+        app,
+        "POST",
+        "/public/orders",
+        json={
+            "branch_id": ASHESI_BRANCH_ID,
+            "whatsapp_consent": True,
+            "customer_phone": "233244123456",
+            "delivery_address": "Christina village, blue gate",
+            "items": [{"item_id": "jollof-chicken", "quantity": 1}],
+            "payment_method": "cash",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["delivery_address"] == "Christina village, blue gate"
+    assert body["delivery_latitude"] is None
+    assert body["delivery_longitude"] is None
+
+
+def test_out_of_range_coordinates_are_rejected(app):
+    response = api_request(
+        app,
+        "POST",
+        "/public/orders",
+        json={
+            "branch_id": ASHESI_BRANCH_ID,
+            "customer_phone": "233244123456",
+            "delivery_address": "Ashesi campus",
+            "delivery_latitude": 95.0,
+            "delivery_longitude": -0.22,
+            "items": [{"item_id": "jollof-chicken", "quantity": 1}],
+            "payment_method": "cash",
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_public_order_idempotency_prevents_double_tap_duplicates(app, fake_backend):
     payload = {
         "branch_id": ASHESI_BRANCH_ID,
@@ -581,6 +712,211 @@ def test_admin_routes_require_sign_in(app):
     response = api_request(app, "GET", "/admin/orders")
     assert response.status_code == 401
     assert "sign-in" in response.json()["detail"].lower()
+
+
+def test_admin_order_scopes_filter_before_server_pagination(app, fake_backend):
+    for index in range(60):
+        fake_backend.tables["orders"].append(
+            {
+                "id": f"closed-{index}",
+                "order_number": f"ORD-CLOSED-{index:03d}",
+                "tracking_code": f"TRK-CLOSED-{index:03d}",
+                "customer_name_snapshot": f"Closed Customer {index}",
+                "customer_phone_snapshot": f"23320000{index:03d}",
+                "branch_id": ASHESI_BRANCH_ID,
+                "status": "delivered",
+                "payment_status": "paid",
+                "total_amount": 45,
+                "channel": "web",
+                "created_at": f"2026-08-04T12:{index:02d}:00+00:00",
+            }
+        )
+    fake_backend.tables["orders"].append(
+        {
+            "id": "older-live-order",
+            "order_number": "ORD-LIVE-001",
+            "tracking_code": "TRK-LIVE-001",
+            "customer_name_snapshot": "Ama Live",
+            "customer_phone_snapshot": "233244000111",
+            "branch_id": ASHESI_BRANCH_ID,
+            "status": "preparing",
+            "payment_status": "pending",
+            "total_amount": 90,
+            "channel": "whatsapp",
+            "created_at": "2026-08-04T08:00:00+00:00",
+        }
+    )
+    headers = staff_headers(app)
+
+    live_response = api_request(
+        app,
+        "GET",
+        f"/admin/orders?scope=live&branch_id={ASHESI_BRANCH_ID}&limit=15",
+        headers=headers,
+    )
+    closed_response = api_request(
+        app,
+        "GET",
+        f"/admin/orders?scope=closed&branch_id={ASHESI_BRANCH_ID}&limit=15&offset=15",
+        headers=headers,
+    )
+
+    assert live_response.status_code == 200
+    assert live_response.json()["total"] == 1
+    assert live_response.json()["items"][0]["id"] == "older-live-order"
+    assert closed_response.status_code == 200
+    assert closed_response.json()["total"] == 60
+    assert len(closed_response.json()["items"]) == 15
+    assert closed_response.json()["offset"] == 15
+
+
+def test_admin_closed_order_search_runs_before_pagination(app, fake_backend):
+    for index, name in enumerate(["Ama Mensah", "Kojo Addo", "Akosua Boateng"]):
+        fake_backend.tables["orders"].append(
+            {
+                "id": f"search-{index}",
+                "order_number": f"ORD-SEARCH-{index}",
+                "tracking_code": f"TRK-SEARCH-{index}",
+                "customer_name_snapshot": name,
+                "customer_phone_snapshot": f"23324400000{index}",
+                "branch_id": ASHESI_BRANCH_ID,
+                "status": "delivered",
+                "payment_status": "paid",
+                "total_amount": 45,
+                "channel": "web",
+                "created_at": f"2026-08-04T09:0{index}:00+00:00",
+            }
+        )
+    headers = staff_headers(app)
+
+    response = api_request(
+        app,
+        "GET",
+        f"/admin/orders?scope=closed&branch_id={ASHESI_BRANCH_ID}&q=Akosua&limit=1",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["customer_name"] == "Akosua Boateng"
+
+
+def test_order_detail_actions_are_filtered_for_the_staff_role(app, fake_backend):
+    created = api_request(
+        app,
+        "POST",
+        "/public/orders",
+        json={
+            "branch_id": ASHESI_BRANCH_ID,
+            "customer_phone": "233244123456",
+            "delivery_address": "Ashesi campus",
+            "items": [{"item_id": "jollof-chicken", "quantity": 1}],
+            "payment_method": "cash",
+        },
+    )
+    headers = staff_headers(app, username="ashesi-kitchen")
+
+    response = api_request(
+        app,
+        "GET",
+        f"/admin/orders/{created.json()['id']}",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert set(response.json()["allowed_next_statuses"]) == {
+        "confirmed",
+        "delayed",
+        "rejected",
+    }
+
+
+def test_delivery_cannot_skip_dispatch_and_exceptions_resume_exact_stage(app, fake_backend):
+    created = api_request(
+        app,
+        "POST",
+        "/public/orders",
+        json={
+            "branch_id": ASHESI_BRANCH_ID,
+            "customer_phone": "233244123456",
+            "delivery_address": "Ashesi campus",
+            "items": [{"item_id": "jollof-chicken", "quantity": 1}],
+            "payment_method": "cash",
+        },
+    )
+    order_id = created.json()["id"]
+    headers = staff_headers(app)
+
+    for status, extra in [
+        ("confirmed", {"eta_minutes": 40}),
+        ("preparing", {}),
+        ("ready", {}),
+    ]:
+        response = api_request(
+            app,
+            "PATCH",
+            f"/admin/orders/{order_id}/status",
+            headers=headers,
+            json={"status": status, **extra},
+        )
+        assert response.status_code == 200
+
+    ready_detail = api_request(app, "GET", f"/admin/orders/{order_id}", headers=headers)
+    assert "out_for_delivery" in ready_detail.json()["allowed_next_statuses"]
+    assert "delivered" not in ready_detail.json()["allowed_next_statuses"]
+    skipped_dispatch = api_request(
+        app,
+        "PATCH",
+        f"/admin/orders/{order_id}/status",
+        headers=headers,
+        json={"status": "delivered"},
+    )
+    assert skipped_dispatch.status_code == 400
+
+    delayed = api_request(
+        app,
+        "PATCH",
+        f"/admin/orders/{order_id}/status",
+        headers=headers,
+        json={
+            "status": "delayed",
+            "reason_code": "staff_exception",
+            "reason_note": "Rider is late.",
+        },
+    )
+    assert delayed.status_code == 200
+    assert set(delayed.json()["allowed_next_statuses"]) == {
+        "ready",
+        "cancel_requested",
+        "cancelled",
+    }
+
+    wrong_resume = api_request(
+        app,
+        "PATCH",
+        f"/admin/orders/{order_id}/status",
+        headers=headers,
+        json={"status": "preparing"},
+    )
+    assert wrong_resume.status_code == 400
+    correct_resume = api_request(
+        app,
+        "PATCH",
+        f"/admin/orders/{order_id}/status",
+        headers=headers,
+        json={"status": "ready"},
+    )
+    assert correct_resume.status_code == 200
+
+
+def test_non_delivery_order_can_close_from_ready_without_dispatch():
+    allowed = order_service.get_allowed_next_statuses(
+        "ready",
+        fulfillment_type="pickup",
+    )
+
+    assert OrderStatus.delivered in allowed
+    assert OrderStatus.out_for_delivery not in allowed
 
 
 def test_staff_can_record_collected_cash_with_an_audit_payment(app, fake_backend):

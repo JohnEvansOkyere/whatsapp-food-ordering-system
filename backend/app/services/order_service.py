@@ -20,12 +20,14 @@ from app.schemas.order import (
     AdminOrderListItemSchema,
     CancelOrderSchema,
     CreateOrderSchema,
+    FulfillmentType,
     OrderEventSchema,
     OrderFeedbackSchema,
     OrderItemInputSchema,
     OrderItemSelectionSchema,
     OrderItemSchema,
     OrderResponseSchema,
+    OrderListScope,
     OrderStatus,
     OrderTrackingEventSchema,
     OrderTrackingResponseSchema,
@@ -70,6 +72,20 @@ ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "delivered": set(),
 }
 
+ORDER_SCOPE_STATUSES: dict[OrderListScope, set[str]] = {
+    OrderListScope.all: set(),
+    OrderListScope.live: {
+        "pending",
+        "new",
+        "confirmed",
+        "preparing",
+        "ready",
+        "out_for_delivery",
+    },
+    OrderListScope.attention: {"delayed", "cancel_requested"},
+    OrderListScope.closed: {"delivered", "cancelled", "rejected"},
+}
+
 STATUS_EVENT_TYPES: dict[str, str] = {
     "new": "order_created",
     "confirmed": "order_confirmed",
@@ -109,6 +125,16 @@ def _to_float(value: object) -> float:
     return float(value)
 
 
+def _to_optional_float(value: object) -> float | None:
+    """Coordinates stay None when the address was typed rather than pinned."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_status(value: str | OrderStatus | None) -> OrderStatus:
     raw = value.value if isinstance(value, OrderStatus) else str(value or OrderStatus.new.value)
     if raw == OrderStatus.pending.value:
@@ -116,9 +142,41 @@ def _normalize_status(value: str | OrderStatus | None) -> OrderStatus:
     return OrderStatus(raw)
 
 
-def get_allowed_next_statuses(status: str | OrderStatus) -> list[OrderStatus]:
+def get_allowed_next_statuses(
+    status: str | OrderStatus,
+    *,
+    fulfillment_type: str | FulfillmentType = FulfillmentType.delivery,
+    resume_status: str | OrderStatus | None = None,
+) -> list[OrderStatus]:
     normalized = _normalize_status(status).value
-    return [OrderStatus(next_status) for next_status in sorted(ALLOWED_STATUS_TRANSITIONS[normalized])]
+    allowed = set(ALLOWED_STATUS_TRANSITIONS[normalized])
+
+    # Delivery orders must pass through dispatch. Pickup and dine-in orders have
+    # no rider stage, so Ready can close directly instead.
+    if normalized == OrderStatus.ready.value:
+        fulfillment_value = (
+            fulfillment_type.value
+            if isinstance(fulfillment_type, FulfillmentType)
+            else str(fulfillment_type)
+        )
+        fulfillment = FulfillmentType(fulfillment_value)
+        if fulfillment == FulfillmentType.delivery:
+            allowed.discard(OrderStatus.delivered.value)
+        else:
+            allowed.discard(OrderStatus.out_for_delivery.value)
+
+    # Exceptions temporarily replace the visible status in the launch schema.
+    # Only permit returning to the exact stage recorded on the exception event,
+    # rather than asking staff to choose from every possible workflow stage.
+    if normalized in {OrderStatus.delayed.value, OrderStatus.cancel_requested.value}:
+        exception_actions = {OrderStatus.cancelled.value}
+        if normalized == OrderStatus.delayed.value:
+            exception_actions.add(OrderStatus.cancel_requested.value)
+        allowed = exception_actions
+        if resume_status is not None:
+            allowed.add(_normalize_status(resume_status).value)
+
+    return [OrderStatus(next_status) for next_status in sorted(allowed)]
 
 
 def get_status_label(status: str | OrderStatus) -> str:
@@ -330,6 +388,8 @@ def _build_order_response(
         delivery_address=str(
             row.get("delivery_address_snapshot") or row.get("delivery_address") or ""
         ),
+        delivery_latitude=_to_optional_float(row.get("delivery_latitude")),
+        delivery_longitude=_to_optional_float(row.get("delivery_longitude")),
         items=items,
         subtotal_amount=_to_float(row.get("subtotal_amount") or row.get("total_amount")),
         delivery_fee=_to_float(row.get("delivery_fee")),
@@ -577,6 +637,9 @@ async def create_order(data: CreateOrderSchema) -> OrderResponseSchema:
         "customer_phone": data.customer_phone,
         "customer_name": data.customer_name,
         "delivery_address": data.delivery_address,
+        "delivery_latitude": data.delivery_latitude,
+        "delivery_longitude": data.delivery_longitude,
+        "delivery_place_id": data.delivery_place_id,
         "items": _build_legacy_items(resolved_items),
         "total_amount": total,
         "payment_method": data.payment_method.value,
@@ -778,12 +841,24 @@ async def get_order_detail(order_id: str) -> AdminOrderDetailSchema | None:
         items,
         branch_name=branch.name if branch else None,
     )
+    exception_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.to_status == order.status and event.from_status is not None
+        ),
+        None,
+    )
 
     return AdminOrderDetailSchema(
         **order.model_dump(),
         tenant_id=row.get("tenant_id"),
         customer_id=row.get("customer_id"),
-        allowed_next_statuses=get_allowed_next_statuses(order.status),
+        allowed_next_statuses=get_allowed_next_statuses(
+            order.status,
+            fulfillment_type=order.fulfillment_type,
+            resume_status=exception_event.from_status if exception_event else None,
+        ),
         events=events,
     )
 
@@ -791,25 +866,46 @@ async def get_order_detail(order_id: str) -> AdminOrderDetailSchema | None:
 async def list_orders(
     *,
     status: OrderStatus | None = None,
+    scope: OrderListScope = OrderListScope.all,
     branch_id: str | None = None,
     limit: int = 50,
-) -> list[AdminOrderListItemSchema]:
+    offset: int = 0,
+    search: str | None = None,
+) -> tuple[list[AdminOrderListItemSchema], int]:
     supabase = get_supabase()
-    query = supabase.table("orders").select("*").order("created_at", desc=True).limit(limit)
+    query = supabase.table("orders").select("*", count="exact")
     if branch_id:
         query = query.eq("branch_id", branch_id)
 
-    result = query.execute()
-    rows = result.data or []
     if status:
         desired = _normalize_status(status).value
-        rows = [
-            row
-            for row in rows
-            if _normalize_status(row.get("status")).value == desired
-        ]
+        statuses = [desired, OrderStatus.pending.value] if desired == OrderStatus.new.value else [desired]
+        query = query.in_("status", statuses)
+    elif ORDER_SCOPE_STATUSES[scope]:
+        query = query.in_("status", sorted(ORDER_SCOPE_STATUSES[scope]))
 
-    return [
+    normalized_search = re.sub(r"[,()]", " ", search or "").strip()
+    if normalized_search:
+        pattern = f"%{normalized_search}%"
+        query = query.or_(
+            ",".join(
+                [
+                    f"order_number.ilike.{pattern}",
+                    f"tracking_code.ilike.{pattern}",
+                    f"customer_name_snapshot.ilike.{pattern}",
+                    f"customer_phone_snapshot.ilike.{pattern}",
+                ]
+            )
+        )
+
+    result = (
+        query
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = result.data or []
+    items = [
         AdminOrderListItemSchema(
             id=str(row["id"]),
             order_number=row.get("order_number"),
@@ -825,6 +921,7 @@ async def list_orders(
         )
         for row in rows
     ]
+    return items, int(result.count if result.count is not None else len(items))
 
 
 async def update_order_status(
@@ -847,8 +944,25 @@ async def update_order_status(
     if current_status == target_status:
         return await get_order_detail(order_id)
 
-    allowed = ALLOWED_STATUS_TRANSITIONS[current_status.value]
-    if target_status.value not in allowed:
+    resume_status: OrderStatus | None = None
+    if current_status in {OrderStatus.delayed, OrderStatus.cancel_requested}:
+        events = await _fetch_order_events(order_id)
+        exception_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.to_status == current_status and event.from_status is not None
+            ),
+            None,
+        )
+        resume_status = exception_event.from_status if exception_event else None
+
+    allowed = get_allowed_next_statuses(
+        current_status,
+        fulfillment_type=str(row.get("fulfillment_type") or FulfillmentType.delivery.value),
+        resume_status=resume_status,
+    )
+    if target_status not in allowed:
         raise ValueError(
             f"Invalid status transition: {current_status.value} -> {target_status.value}"
         )

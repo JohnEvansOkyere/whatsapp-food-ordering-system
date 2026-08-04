@@ -6,6 +6,9 @@ export interface Branch {
   phone?: string | null
   address?: string | null
   city?: string | null
+  /** Used to bias address search towards the branch's service area. */
+  latitude?: number | null
+  longitude?: number | null
   is_default: boolean
   accepting_orders: boolean
   is_open_now?: boolean
