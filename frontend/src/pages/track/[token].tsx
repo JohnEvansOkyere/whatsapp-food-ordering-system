@@ -245,6 +245,7 @@ export default function TrackOrderPage() {
   const supportMessage = encodeURIComponent(
     `Hi, I need help with order ${order?.order_number || order?.tracking_code || ''}.`
   )
+  const pageTitle = `${order?.order_number ? `${order.order_number} · ` : ''}Track order | ${RESTAURANT.name}`
 
   const submitRating = async (value: number) => {
     setRating(value)
@@ -269,10 +270,7 @@ export default function TrackOrderPage() {
   return (
     <>
       <Head>
-        <title>
-          {order?.order_number ? `${order.order_number} · ` : ''}Track order |{' '}
-          {RESTAURANT.name}
-        </title>
+        <title>{pageTitle}</title>
         <meta
           name="description"
           content="Follow your food from the kitchen to delivery."
