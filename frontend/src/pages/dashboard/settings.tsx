@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { ArrowLeft, RefreshCw, Search, ShoppingBag, Store } from 'lucide-react'
 import { Branch, FALLBACK_BRANCHES } from '@/lib/branches'
 import { RESTAURANT } from '@/lib/menuData'
-import { clearStaffSession, getStaffSession, staffFetch } from '@/lib/staffAuth'
+import { clearStaffSession, getStaffSession, staffFetch, type StaffSession } from '@/lib/staffAuth'
 
 interface MenuAvailabilityItem {
   id: string
@@ -24,6 +24,7 @@ function restaurantInitials(name: string) {
 }
 
 export default function DashboardSettingsPage() {
+  const [session, setSession] = useState<StaffSession | null>(null)
   const [menuItems, setMenuItems] = useState<MenuAvailabilityItem[]>([])
   const [operationalBranches, setOperationalBranches] = useState<Branch[]>([])
   const [selectedBranchId, setSelectedBranchId] = useState('')
@@ -34,7 +35,6 @@ export default function DashboardSettingsPage() {
   const [error, setError] = useState('')
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-  const session = getStaffSession()
   const staffRole = session?.staff.role || ''
   const canManageBranch = ['tenant_owner', 'manager'].includes(staffRole)
   const canManageMenu = ['tenant_owner', 'manager', 'kitchen'].includes(staffRole)
@@ -99,6 +99,7 @@ export default function DashboardSettingsPage() {
       window.location.assign('/admin/login')
       return
     }
+    setSession(currentSession)
     setSelectedBranchId(currentSession.staff.branch_ids[0] || '')
     void loadStaffBranches()
   }, [])

@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import { RESTAURANT } from '@/lib/menuData'
-import { clearStaffSession, getStaffSession, staffFetch } from '@/lib/staffAuth'
+import { clearStaffSession, getStaffSession, staffFetch, type StaffSession } from '@/lib/staffAuth'
 import { Branch, FALLBACK_BRANCHES } from '@/lib/branches'
 
 type OrderStatus =
@@ -630,6 +630,7 @@ function statusBadge(status: OrderStatus) {
 }
 
 export default function DashboardPage() {
+  const [session, setSession] = useState<StaffSession | null>(null)
   const [liveOrders, setLiveOrders] = useState<OrderListItem[]>([])
   const [attentionOrders, setAttentionOrders] = useState<OrderListItem[]>([])
   const [closedOrders, setClosedOrders] = useState<OrderListItem[]>([])
@@ -656,7 +657,6 @@ export default function DashboardPage() {
   const detailRequestId = useRef(0)
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-  const session = getStaffSession()
   const staffRole = session?.staff.role || ''
   const canManageBranch = ['tenant_owner', 'manager'].includes(staffRole)
   const canManagePayments = ['tenant_owner', 'manager', 'cashier'].includes(staffRole)
@@ -827,6 +827,7 @@ export default function DashboardPage() {
       window.location.assign('/admin/login')
       return
     }
+    setSession(currentSession)
     setSelectedBranchId(currentSession.staff.branch_ids[0] || '')
     void loadStaffBranches()
   }, [])
